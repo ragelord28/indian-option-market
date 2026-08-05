@@ -21,6 +21,9 @@ explained confidence scores.
    decisions are not sacred, but changing them requires updating Decisions.md.
 7. The project must remain modular and able to grow indefinitely without
    becoming unmaintainable.
+8. 8. The platform only surfaces high-confidence, high-quality trade calls to
+   the trader. Low-confidence or noisy signals are filtered out internally,
+   not shown with a caveat — quality over quantity, always.
 
 ## Who is building this
 The project owner is a non-coder. All AI collaborators (Gemini, Antigravity,
