@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 0 — Environment & Knowledge Base Setup
-- **Status**: Finalizing core documentation in `/docs/`.
+- **Active Phase**: Phase 1 — Data Ingestion Layer
+- **Status**: Phase 0 complete. Beginning YahooFinanceProvider design.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
