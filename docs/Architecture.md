@@ -47,7 +47,7 @@ The platform consists of independent, decoupled Python modules:
    - Owns the live monitoring loop: polls Upstox at a set interval, feeds fresh data through Data Ingestion → Strategy Engine → Risk Engine → Signal Filter, in sequence.
    - Does not contain strategy logic itself — purely coordinates the other modules.
 
-7. **Logging & Audit Trail** (`src/logging/`)
+7. **Logging & Audit Trail** (`src/audit_log/`)
    - Records every signal generated, including ones suppressed by the Rule 8 filter, with timestamp and reasoning.
    - Cross-cutting: called by the Signal Filter and Backtester, not a standalone pipeline stage.
    - Feeds future strategy review and improvement (Vision.md, "Continuous improvement").
