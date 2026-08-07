@@ -20,6 +20,7 @@ This document records major technical decisions, including context, rationale, a
 - **Decision**: Use a pluggable Adapter Pattern in `src/data/`. Implement `YahooFinanceProvider` first for historical stock data,
   followed by `UpstoxProvider` for live market data in later phases (with options-chain data handling flagged as a separate open item — see Architecture.md).
 - **Consequences**: Downstream strategy and backtesting modules consume a standardized internal data format and are agnostic to data sources.
+  *Note on data limitation*: Yahoo Finance only provides ~7 days of 1-minute intraday data, reinforcing the necessity of Upstox integration for historical intraday strategy backtesting.
 
 ---
 
@@ -38,3 +39,28 @@ This document records major technical decisions, including context, rationale, a
 - **Context**: Noisy or weak trade signals create decision fatigue.
 - **Decision**: Suppress low-confidence setups internally within `src/signals/`. Only high-confidence setups meeting quality thresholds are surfaced.
 - **Consequences**: Emphasizes signal quality over quantity. Suppressed signals are logged for audit purposes.
+
+---
+
+## ADR-005: Standard Internal Market Data Schema & Provider Interface
+- **Date**: 2026-08-06
+- **Status**: Accepted
+- **Context**: Modules outside `src/data/` must consume a unified, standardized internal market data structure, regardless of the underlying raw data provider (Yahoo Finance, Upstox, etc.).
+- **Decision**: 
+  - Standardized market data DataFrames must use a `DatetimeIndex` named `timestamp` localized to Indian Standard Time (IST, `Asia/Kolkata`).
+  - Required columns: `symbol` (str), `open` (float64), `high` (float64), `low` (float64), `close` (float64), `adj_close` (float64), `volume` (int64/float64), `open_interest` (float64).
+  - Allowed internal symbol characters include uppercase letters, numbers, underscores, ampersands, and hyphens (e.g., `RELIANCE`, `M&M`, `BAJAJ-AUTO`, `NIFTY50`; disallowed: provider suffixes like `.NS` or `^`, lowercase tickers).
+  - Data ingestion adapters must inherit from `BaseDataProvider` and adhere strictly to this schema.
+- **Consequences**: Downstream strategy, backtesting, risk, and signal modules consume a consistent schema and timezone, cleanly decoupled from data provider specifics.
+
+---
+
+## ADR-006: The Data Funnel & API Limit Protection
+- **Date**: 2026-08-07
+- **Status**: Accepted
+- **Context**: Querying broker APIs (Upstox) continuously across a broad 150 F&O stock universe risks hitting rate limits and consuming quota unnecessarily.
+- **Decision**: High-rate-limit broker APIs (Upstox) are strictly reserved for live D-Day execution on narrow shortlists (3–5 stocks) and interactive trade validation. Broad D-1 scanning and historical backtesting must rely on free data sources (`yfinance`, `nsepython`) and synthetic Black-Scholes option pricing (`py_vollib`).
+- **Consequences**: Eliminates broker API rate limit breaches, optimizes execution speed during live market hours, and enables cost-effective offline backtesting.
+
+
+

@@ -55,7 +55,38 @@ The platform consists of independent, decoupled Python modules:
 8. **Monitoring Dashboard / UI** (`src/ui/`)
    - Displays real-time strategy state, high-quality signals, risk metrics, and explanations.
 
-## 3. End-to-End Data Pipelines
+## 3. Multi-Agent Ecosystem & The Data Funnel
+
+To protect broker API rate limits and keep operations cost-effective, the system enforces a strict "Data Funnel" architecture operated by 4 specialized agents with strict data source boundaries:
+
+1. **Agent 1: D-1 Scanner (The Researcher)**
+   - **Timing**: Runs End-of-Day (EOD).
+   - **Data Sources**: Uses `yfinance` (underlying stocks/indices) and `nsepython` (free public NSE web scraping) to scan the ~150 F&O stock universe.
+   - **Function**: Performs broad technical and quantitative analysis to filter 150 stocks down to a focused shortlist of 3–5 high-conviction candidate stocks for the upcoming trading session.
+   - **Constraint**: **NEVER** uses broker APIs (e.g., Upstox) to preserve API quota.
+
+2. **Agent 2: D-Day Monitor (The Sniper)**
+   - **Timing**: Runs live during market hours.
+   - **Data Sources**: Uses the **Upstox API ONLY**, strictly targeted at the 3–5 shortlisted stocks produced by Agent 1.
+   - **Function**: Monitors live options chains, real-time intraday ticks, implied volatility (IV), open interest (OI) shifts, and execution triggers.
+
+3. **Agent 3: The Validator**
+   - **Timing**: Interactive / on-demand during trade evaluation.
+   - **Data Sources**: Upstox API and risk management engine.
+   - **Function**: Validates manual trade decisions or broker calls against system risk parameters, position sizing rules, and portfolio limits.
+
+4. **Agent 4: The Backtester**
+   - **Timing**: Offline strategy research & development.
+   - **Data Sources**: `yfinance` underlying historical OHLCV data combined with **Black-Scholes Synthetic Option Pricing** (`py_vollib`).
+   - **Function**: Simulates historical options trades without requiring expensive or unavailable historical options tick data by synthetically pricing options contracts off historical underlying price and IV surfaces.
+
+### Model Context Protocol (MCP) Integration
+AI agents interact with external tools and services via dedicated Model Context Protocol (MCP) servers:
+- **Upstox MCP**: Exposes live market quotes, option chains, and account status to Agent 2 and Agent 3.
+- **Web Scraping MCP (Crawl4AI)**: Exposes public NSE web scraping capabilities for EOD research and market news analysis to Agent 1.
+- **Database MCP**: Exposes local SQLite/Parquet query tools for accessing cached market data and audit logs.
+
+## 4. End-to-End Data Pipelines
 
 **Backtesting (offline) path:**
 `Historical Data (cached)` → `Backtester` → `Strategy Engine` → `Risk Engine` → `Signal Filter` → `Backtest Report`
@@ -63,17 +94,17 @@ The platform consists of independent, decoupled Python modules:
 **Live (online) path:**
 `Upstox API (live)` → `Orchestrator (polls every N min)` → `Data Ingestion & Caching` → `Strategy Engine` (same code as backtest) → `Risk Engine` → `Signal Filter (Rule 8)` → `Logging` → `Dashboard` → `Manual Trade Execution`
 
-## 4. Testing
+## 5. Testing
 - `tests/` mirrors the structure of `src/` — one test module per component.
 - Every module must be testable in isolation, per Core.md.
 
-## 5. Configuration & Data Storage
+## 6. Configuration & Data Storage
 - **Secrets & Keys**: stored locally in `.env` (never committed to GitHub).
 - **Strategy & Risk Parameters**: structured YAML configuration files.
 - **Historical Data**: local Parquet/SQLite storage.
 - **`.gitignore`**: excludes `.env`, cached data (`data/`), and logs (`logs/`) — none of these belong in version control.
 
-## 6. Project Folder Structure
+## 7. Project Folder Structure
 ```
 indian-option-market/
 ├── docs/              # knowledge base (Core.md, Vision.md, Architecture.md, ...)
