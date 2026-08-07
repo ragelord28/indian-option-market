@@ -57,17 +57,26 @@ class PipelineRunner:
             symbol=symbol, start_date=start_date, end_date=end_date
         )
 
-        # 2. Generate signals via Strategy Engine
+        # 2. Generate signals via Strategy Engine exactly ONCE
         signals = self.strategy.generate_signals(df)
 
-        # 3. Log signals via Audit Logger
+        # 3. Evaluate Rule 8 and log EVERY signal to AuditLogger
+        valid_signals = []
         for signal in signals:
-            self.audit_logger.log_signal(
-                signal=signal,
-                passed_rule_8=True,
-                rejection_reason=None,
+            passed_rule_8 = self.strategy.filter_signal_rule_8(signal)
+            rejection_reason = (
+                None if passed_rule_8 else "Suppressed by Rule 8 filter (confidence < 0.60)"
             )
 
-        # 4. Run Backtesting Engine
-        result = self.backtest_engine.run(df)
+            self.audit_logger.log_signal(
+                signal=signal,
+                passed_rule_8=passed_rule_8,
+                rejection_reason=rejection_reason,
+            )
+
+            if passed_rule_8:
+                valid_signals.append(signal)
+
+        # 4. Run Backtesting Engine passing ONLY valid_signals
+        result = self.backtest_engine.run(df, signals=valid_signals)
         return result

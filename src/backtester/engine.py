@@ -38,12 +38,15 @@ class BacktestEngine:
         self.initial_capital = initial_capital
         self.risk_manager = risk_manager or RiskManager(account_capital=initial_capital)
 
-    def run(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def run(
+        self, df: pd.DataFrame, signals: Optional[List[Signal]] = None
+    ) -> Dict[str, Any]:
         """
         Run backtest simulation on an ADR-005 market data DataFrame.
 
         Args:
             df: Standardized market data DataFrame.
+            signals: Optional pre-filtered list of Signals. If None, generated via strategy.
 
         Returns:
             Dictionary containing performance metrics and list of executed Trades:
@@ -70,8 +73,9 @@ class BacktestEngine:
                 "trades": [],
             }
 
-        # 1. Generate signals using Strategy Engine
-        signals: List[Signal] = self.strategy.generate_signals(df)
+        # 1. Use provided signals or generate signals via Strategy Engine
+        if signals is None:
+            signals = self.strategy.generate_signals(df)
 
         trades: List[Trade] = []
         timestamps = list(df.index)
@@ -103,12 +107,18 @@ class BacktestEngine:
             # Calculate position size using RiskManager
             quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss)
 
+            # Fix 2: If quantity is 0 (risk or capital limit breached), skip the trade
+            if quantity == 0:
+                continue
+
             # Check if signal specifies an option trade
             if signal.metadata.get("type") == "OPTION":
                 strike = entry_spot
-                entry_premium = calculate_option_price("c", entry_spot, strike, 30.0)
+                # Fix 1: Extract option_type ('c' or 'p') and align for entry and exit
+                opt_type = signal.metadata.get("option_type", "c")
+
+                entry_premium = calculate_option_price(opt_type, entry_spot, strike, 30.0)
                 trade_type = "OPTION"
-                opt_quantity = 100  # Standard lot for options
 
                 # Simulate exit for option trade
                 exit_price = round(entry_premium, 2)
@@ -122,14 +132,14 @@ class BacktestEngine:
                     if action == "BUY":
                         if bar["high"] >= target_price or bar["low"] <= stop_loss:
                             dte = max(30.0 - (i - entry_idx), 1.0)
-                            exit_premium = calculate_option_price("c", bar_spot, strike, dte)
+                            exit_premium = calculate_option_price(opt_type, bar_spot, strike, dte)
                             exit_price = round(exit_premium, 2)
                             exit_time = bar.name
                             break
                     elif action == "SELL":
                         if bar["low"] <= target_price or bar["high"] >= stop_loss:
                             dte = max(30.0 - (i - entry_idx), 1.0)
-                            exit_premium = calculate_option_price("p", bar_spot, strike, dte)
+                            exit_premium = calculate_option_price(opt_type, bar_spot, strike, dte)
                             exit_price = round(exit_premium, 2)
                             exit_time = bar.name
                             break
@@ -138,11 +148,11 @@ class BacktestEngine:
                     final_bar = df.iloc[-1]
                     final_spot = float(final_bar["close"])
                     dte = max(30.0 - (len(df) - 1 - entry_idx), 1.0)
-                    exit_premium = calculate_option_price("c", final_spot, strike, dte)
+                    exit_premium = calculate_option_price(opt_type, final_spot, strike, dte)
                     exit_price = round(exit_premium, 2)
                     exit_time = final_bar.name
 
-                pnl = round((exit_price - entry_premium) * opt_quantity, 2)
+                pnl = round((exit_price - entry_premium) * quantity, 2)
                 pnl_percent = (
                     round(((exit_price - entry_premium) / entry_premium) * 100.0, 2)
                     if entry_premium > 0
@@ -155,13 +165,14 @@ class BacktestEngine:
                     exit_time=exit_time,
                     entry_price=round(entry_premium, 2),
                     exit_price=exit_price,
-                    quantity=opt_quantity,
+                    quantity=quantity,
                     pnl=pnl,
                     pnl_percent=pnl_percent,
                     trade_type=trade_type,
                     metadata={
                         "strike": strike,
                         "entry_spot": entry_spot,
+                        "option_type": opt_type,
                         "strategy": signal.strategy_name,
                         "confidence": signal.confidence,
                     },
@@ -196,7 +207,12 @@ class BacktestEngine:
                             exit_time = bar.name
                             break
 
-                pnl = round((exit_price - entry_price) * quantity if action == "BUY" else (entry_price - exit_price) * quantity, 2)
+                pnl = round(
+                    (exit_price - entry_price) * quantity
+                    if action == "BUY"
+                    else (entry_price - exit_price) * quantity,
+                    2,
+                )
                 pnl_percent = (
                     round(((exit_price - entry_price) / entry_price) * 100.0, 2)
                     if entry_price > 0

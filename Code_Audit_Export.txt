@@ -1,0 +1,1963 @@
+# Indian Option Market Platform - Code Audit Export
+# Total Python Files: 21
+
+================================================================================
+File: src/audit_log/__init__.py
+================================================================================
+"""
+Audit Logging Module for signal and system audit trailing.
+"""
+
+from src.audit_log.logger import AuditLogger
+
+__all__ = ["AuditLogger"]
+
+
+================================================================================
+File: src/audit_log/logger.py
+================================================================================
+"""
+Audit Logger for recording signals and quality filter outcomes in JSON-Lines format.
+"""
+
+import json
+from pathlib import Path
+from typing import Optional, Dict, Any
+from src.strategies.base_strategy import Signal
+
+DEFAULT_LOG_PATH = Path("logs/signals.jsonl")
+
+
+class AuditLogger:
+    """
+    Records all generated signals and Rule 8 evaluation outcomes to a local JSONL file.
+    """
+
+    def __init__(self, log_path: Path | str = DEFAULT_LOG_PATH):
+        """
+        Initialize the AuditLogger.
+
+        Args:
+            log_path: File path to append signal JSON records.
+        """
+        self.log_path = Path(log_path)
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def log_signal(
+        self,
+        signal: Signal,
+        passed_rule_8: bool,
+        rejection_reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Appends a JSON-lines record for a trade signal.
+
+        Args:
+            signal: The Signal dataclass instance.
+            passed_rule_8: Boolean flag indicating if signal passed Rule 8 filter.
+            rejection_reason: Optional string reason if suppressed.
+
+        Returns:
+            The dictionary record logged to disk.
+        """
+        record = {
+            "timestamp": str(signal.timestamp),
+            "symbol": signal.symbol,
+            "strategy_name": signal.strategy_name,
+            "action": signal.action,
+            "confidence": float(signal.confidence),
+            "entry_price": float(signal.entry_price) if signal.entry_price else None,
+            "stop_loss": float(signal.stop_loss) if signal.stop_loss else None,
+            "target_price": float(signal.target_price) if signal.target_price else None,
+            "passed_rule_8": passed_rule_8,
+            "rejection_reason": rejection_reason,
+            "metadata": signal.metadata if hasattr(signal, "metadata") else {},
+        }
+
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+        return record
+
+
+================================================================================
+File: src/backtester/__init__.py
+================================================================================
+"""
+Backtesting Engine Module for the Indian Option Market platform.
+
+Provides synthetic Black-Scholes options pricing, trade tracking, and backtesting
+execution against historical market data DataFrames.
+"""
+
+from src.backtester.trade import Trade
+from src.backtester.synthetic_options import calculate_option_price
+from src.backtester.engine import BacktestEngine
+
+__all__ = [
+    "Trade",
+    "calculate_option_price",
+    "BacktestEngine",
+]
+
+
+================================================================================
+File: src/backtester/engine.py
+================================================================================
+"""
+Backtest Engine for offline strategy simulation.
+
+Feeds historical ADR-005 market data to Strategy Engine modules, integrates
+RiskManager for position sizing and stop-loss/target exit simulation, and calculates
+performance metrics (Win Rate, Total PnL, Final Capital).
+"""
+
+from typing import Dict, Any, List, Optional
+import pandas as pd
+
+from src.strategies.base_strategy import BaseStrategy, Signal
+from src.backtester.trade import Trade
+from src.backtester.synthetic_options import calculate_option_price
+from src.risk.risk_manager import RiskManager
+
+
+class BacktestEngine:
+    """
+    Simulates strategy execution against historical market data DataFrames with risk management.
+    """
+
+    def __init__(
+        self,
+        strategy: BaseStrategy,
+        initial_capital: float = 100000.0,
+        risk_manager: Optional[RiskManager] = None,
+    ):
+        """
+        Initialize the BacktestEngine.
+
+        Args:
+            strategy: Concrete strategy instance (subclass of BaseStrategy).
+            initial_capital: Starting portfolio capital balance (default 100,000.0).
+            risk_manager: Optional RiskManager instance. If None, default RiskManager is created.
+        """
+        self.strategy = strategy
+        self.initial_capital = initial_capital
+        self.risk_manager = risk_manager or RiskManager(account_capital=initial_capital)
+
+    def run(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Run backtest simulation on an ADR-005 market data DataFrame.
+
+        Args:
+            df: Standardized market data DataFrame.
+
+        Returns:
+            Dictionary containing performance metrics and list of executed Trades:
+            {
+                "metrics": {
+                    "total_trades": int,
+                    "winning_trades": int,
+                    "win_rate": float,
+                    "total_pnl": float,
+                    "final_capital": float,
+                },
+                "trades": List[Trade]
+            }
+        """
+        if df is None or df.empty:
+            return {
+                "metrics": {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "win_rate": 0.0,
+                    "total_pnl": 0.0,
+                    "final_capital": self.initial_capital,
+                },
+                "trades": [],
+            }
+
+        # 1. Generate signals using Strategy Engine
+        signals: List[Signal] = self.strategy.generate_signals(df)
+
+        trades: List[Trade] = []
+        timestamps = list(df.index)
+
+        # 2. Simulate trades for each generated signal
+        for signal in signals:
+            if signal.timestamp not in df.index:
+                continue
+
+            entry_idx = timestamps.index(signal.timestamp)
+            entry_row = df.iloc[entry_idx]
+            entry_spot = float(entry_row["close"])
+            entry_time = entry_row.name
+
+            entry_price = float(signal.entry_price) if signal.entry_price else entry_spot
+            action = signal.action.upper()
+
+            # Ensure stop_loss and target_price are populated via RiskManager
+            if signal.stop_loss is None or signal.target_price is None:
+                stop_loss, target_price = self.risk_manager.calculate_stop_and_target(
+                    entry_price, action
+                )
+                signal.stop_loss = stop_loss
+                signal.target_price = target_price
+            else:
+                stop_loss = float(signal.stop_loss)
+                target_price = float(signal.target_price)
+
+            # Calculate position size using RiskManager
+            quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss)
+
+            # Check if signal specifies an option trade
+            if signal.metadata.get("type") == "OPTION":
+                strike = entry_spot
+                entry_premium = calculate_option_price("c", entry_spot, strike, 30.0)
+                trade_type = "OPTION"
+                opt_quantity = 100  # Standard lot for options
+
+                # Simulate exit for option trade
+                exit_price = round(entry_premium, 2)
+                exit_time = entry_time
+
+                for i in range(entry_idx + 1, len(df)):
+                    bar = df.iloc[i]
+                    bar_spot = float(bar["close"])
+
+                    # If target or stop hit on underlying, exit option trade
+                    if action == "BUY":
+                        if bar["high"] >= target_price or bar["low"] <= stop_loss:
+                            dte = max(30.0 - (i - entry_idx), 1.0)
+                            exit_premium = calculate_option_price("c", bar_spot, strike, dte)
+                            exit_price = round(exit_premium, 2)
+                            exit_time = bar.name
+                            break
+                    elif action == "SELL":
+                        if bar["low"] <= target_price or bar["high"] >= stop_loss:
+                            dte = max(30.0 - (i - entry_idx), 1.0)
+                            exit_premium = calculate_option_price("p", bar_spot, strike, dte)
+                            exit_price = round(exit_premium, 2)
+                            exit_time = bar.name
+                            break
+                else:
+                    # Final bar fallback
+                    final_bar = df.iloc[-1]
+                    final_spot = float(final_bar["close"])
+                    dte = max(30.0 - (len(df) - 1 - entry_idx), 1.0)
+                    exit_premium = calculate_option_price("c", final_spot, strike, dte)
+                    exit_price = round(exit_premium, 2)
+                    exit_time = final_bar.name
+
+                pnl = round((exit_price - entry_premium) * opt_quantity, 2)
+                pnl_percent = (
+                    round(((exit_price - entry_premium) / entry_premium) * 100.0, 2)
+                    if entry_premium > 0
+                    else 0.0
+                )
+
+                trade = Trade(
+                    symbol=signal.symbol,
+                    entry_time=entry_time,
+                    exit_time=exit_time,
+                    entry_price=round(entry_premium, 2),
+                    exit_price=exit_price,
+                    quantity=opt_quantity,
+                    pnl=pnl,
+                    pnl_percent=pnl_percent,
+                    trade_type=trade_type,
+                    metadata={
+                        "strike": strike,
+                        "entry_spot": entry_spot,
+                        "strategy": signal.strategy_name,
+                        "confidence": signal.confidence,
+                    },
+                )
+            else:
+                # Standard Stock Trade with Risk-Based Exit Simulation
+                exit_price = float(df.iloc[-1]["close"])
+                exit_time = df.iloc[-1].name
+
+                for i in range(entry_idx + 1, len(df)):
+                    bar = df.iloc[i]
+                    high = float(bar["high"])
+                    low = float(bar["low"])
+
+                    if action == "BUY":
+                        # Check Stop Loss first for conservatism
+                        if low <= stop_loss:
+                            exit_price = stop_loss
+                            exit_time = bar.name
+                            break
+                        elif high >= target_price:
+                            exit_price = target_price
+                            exit_time = bar.name
+                            break
+                    elif action == "SELL":
+                        if high >= stop_loss:
+                            exit_price = stop_loss
+                            exit_time = bar.name
+                            break
+                        elif low <= target_price:
+                            exit_price = target_price
+                            exit_time = bar.name
+                            break
+
+                pnl = round((exit_price - entry_price) * quantity if action == "BUY" else (entry_price - exit_price) * quantity, 2)
+                pnl_percent = (
+                    round(((exit_price - entry_price) / entry_price) * 100.0, 2)
+                    if entry_price > 0
+                    else 0.0
+                )
+
+                trade = Trade(
+                    symbol=signal.symbol,
+                    entry_time=entry_time,
+                    exit_time=exit_time,
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    quantity=quantity,
+                    pnl=pnl,
+                    pnl_percent=pnl_percent,
+                    trade_type="STOCK",
+                    metadata={
+                        "strategy": signal.strategy_name,
+                        "confidence": signal.confidence,
+                        "stop_loss": stop_loss,
+                        "target_price": target_price,
+                    },
+                )
+
+            trades.append(trade)
+
+        # 3. Calculate summary metrics
+        total_trades = len(trades)
+        winning_trades = sum(1 for t in trades if t.pnl > 0)
+        win_rate = round(winning_trades / total_trades, 4) if total_trades > 0 else 0.0
+        total_pnl = round(sum(t.pnl for t in trades), 2)
+        final_capital = round(self.initial_capital + total_pnl, 2)
+
+        return {
+            "metrics": {
+                "total_trades": total_trades,
+                "winning_trades": winning_trades,
+                "win_rate": win_rate,
+                "total_pnl": total_pnl,
+                "final_capital": final_capital,
+            },
+            "trades": trades,
+        }
+
+
+================================================================================
+File: src/backtester/synthetic_options.py
+================================================================================
+"""
+Synthetic Options Pricing Module using Black-Scholes-Merton.
+
+Enables historical options trade simulation off underlying equity OHLCV data
+without requiring expensive historical tick option datasets.
+"""
+
+from py_vollib.black_scholes import black_scholes
+
+
+def calculate_option_price(
+    flag: str,
+    S: float,
+    K: float,
+    days_to_expiry: float,
+    r: float = 0.065,
+    sigma: float = 0.20,
+) -> float:
+    """
+    Calculates Black-Scholes option price, handling expiration safely.
+
+    Args:
+        flag: Option flag ('c' for Call, 'p' for Put).
+        S: Current underlying asset spot price.
+        K: Strike price of the option contract.
+        days_to_expiry: Remaining time to expiration in days.
+        r: Annualized risk-free interest rate (default 0.065 = RBI repo rate proxy).
+        sigma: Implied volatility as a decimal (default 0.20 = 20% IV).
+
+    Returns:
+        Theoretical Black-Scholes option contract price / premium.
+    """
+    t = days_to_expiry / 365.0
+    if t <= 0.001:  # Expired or expiring today (intrinsic value)
+        return float(max(S - K, 0.0) if flag == "c" else max(K - S, 0.0))
+    return float(black_scholes(flag, S, K, t, r, sigma))
+
+
+================================================================================
+File: src/backtester/trade.py
+================================================================================
+"""
+Trade Data Structure for Backtesting & Signal Execution.
+
+Defines the Trade dataclass tracking trade execution, entry/exit prices, PnL,
+and trade type ('STOCK' or 'OPTION').
+"""
+
+from dataclasses import dataclass, field
+from typing import Any, Dict
+
+
+@dataclass
+class Trade:
+    """
+    Dataclass tracking individual simulated or live trades.
+
+    Attributes:
+        symbol: Standardized internal symbol (e.g. 'RELIANCE').
+        entry_time: Timestamp of trade entry.
+        exit_time: Timestamp of trade exit.
+        entry_price: Price per share or option contract premium at entry.
+        exit_price: Price per share or option contract premium at exit.
+        quantity: Number of shares or option contracts traded.
+        pnl: Absolute monetary profit and loss (exit_price - entry_price) * quantity.
+        pnl_percent: Percentage return ((exit_price - entry_price) / entry_price) * 100.
+        trade_type: Instrument type ('STOCK' or 'OPTION').
+        metadata: Additional details (e.g. strike, expiry, Greeks, underlying price).
+    """
+
+    symbol: str
+    entry_time: Any
+    exit_time: Any
+    entry_price: float
+    exit_price: float
+    quantity: int
+    pnl: float
+    pnl_percent: float
+    trade_type: str = "STOCK"
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+================================================================================
+File: src/data/__init__.py
+================================================================================
+"""
+Data Ingestion & Caching Module for the Indian Option Market platform.
+
+This module provides data provider adapters (e.g. YahooFinanceProvider)
+and standard schema validation according to ADR-005.
+"""
+
+from src.data.base_provider import BaseDataProvider, validate_schema
+from src.data.yahoo_provider import YahooFinanceProvider
+
+__all__ = [
+    "BaseDataProvider",
+    "validate_schema",
+    "YahooFinanceProvider",
+]
+
+
+================================================================================
+File: src/data/base_provider.py
+================================================================================
+"""
+Base Data Provider & Standard Market Data Schema Validation (ADR-005).
+
+This module defines:
+1. BaseDataProvider: An abstract base class for all market data sources (Yahoo, Upstox, etc.).
+2. validate_schema: A standard validator ensuring market DataFrames adhere strictly to ADR-005 rules.
+"""
+
+from abc import ABC, abstractmethod
+import re
+import pandas as pd
+
+
+# Required standard column names per ADR-005
+STANDARD_COLUMNS = [
+    "symbol",
+    "open",
+    "high",
+    "low",
+    "close",
+    "adj_close",
+    "volume",
+    "open_interest",
+]
+
+# Regex pattern for valid internal symbols (uppercase alphanumeric, underscores, ampersands, hyphens, no suffixes)
+VALID_SYMBOL_REGEX = re.compile(r"^[A-Z0-9_&\-]+$")
+
+
+def validate_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Validate that a market data DataFrame strictly complies with ADR-005.
+
+    Rules enforced:
+    - Index must be a DatetimeIndex named 'timestamp'.
+    - Index timezone must be timezone-aware IST ('Asia/Kolkata').
+    - Columns must exactly match STANDARD_COLUMNS in order:
+      ['symbol', 'open', 'high', 'low', 'close', 'adj_close', 'volume', 'open_interest']
+    - 'symbol' column values must be valid internal symbols (uppercase alphanumeric, underscores, &, -, no suffixes).
+    - Price columns ('open', 'high', 'low', 'close', 'adj_close') must be explicitly float64.
+
+    Args:
+        df: The pandas DataFrame to validate.
+
+    Returns:
+        The validated DataFrame if compliant.
+
+    Raises:
+        ValueError: If any ADR-005 schema requirement is violated.
+    """
+    if df is None or not isinstance(df, pd.DataFrame):
+        raise ValueError("Input must be a valid pandas DataFrame.")
+
+    if df.empty:
+        raise ValueError("DataFrame is empty. Cannot validate schema.")
+
+    # 1. Validate index type and name
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError(
+            f"DataFrame index must be a DatetimeIndex, got '{type(df.index).__name__}'."
+        )
+
+    if df.index.name != "timestamp":
+        raise ValueError(
+            f"DataFrame index must be named 'timestamp', got '{df.index.name}'."
+        )
+
+    # 2. Validate IST timezone
+    if df.index.tz is None:
+        raise ValueError(
+            "DataFrame index 'timestamp' must be timezone-aware (Asia/Kolkata)."
+        )
+
+    tz_str = str(df.index.tz)
+    if tz_str not in ("Asia/Kolkata", "Asia/Calcutta", "IST"):
+        raise ValueError(
+            f"DataFrame timestamp index must be in Asia/Kolkata timezone, got '{tz_str}'."
+        )
+
+    # 3. Validate columns
+    actual_cols = list(df.columns)
+    if actual_cols != STANDARD_COLUMNS:
+        raise ValueError(
+            f"DataFrame columns do not match ADR-005 standard.\n"
+            f"Expected: {STANDARD_COLUMNS}\n"
+            f"Got:      {actual_cols}"
+        )
+
+    # 4. Validate symbol column values
+    symbols = df["symbol"].dropna().unique()
+    if len(symbols) == 0:
+        raise ValueError("DataFrame 'symbol' column contains no valid symbol strings.")
+
+    for sym in symbols:
+        if not isinstance(sym, str) or not VALID_SYMBOL_REGEX.match(sym):
+            raise ValueError(
+                f"Invalid internal symbol '{sym}' in 'symbol' column. "
+                "Per ADR-005, internal symbols must be uppercase alphanumeric (with optional _, &, -) without suffixes (e.g. 'RELIANCE', 'M&M', 'BAJAJ-AUTO')."
+            )
+
+    # 5. Validate dtypes for price columns (must be float64)
+    price_cols = ["open", "high", "low", "close", "adj_close"]
+    for col in price_cols:
+        if df[col].dtype != "float64":
+            raise ValueError(
+                f"Column '{col}' must be of dtype float64, got '{df[col].dtype}'."
+            )
+
+    return df
+
+
+class BaseDataProvider(ABC):
+    """
+    Abstract Base Class for all market data provider adapters.
+
+    Every data provider (e.g. YahooFinanceProvider, UpstoxProvider) must inherit
+    from this class and implement `fetch_historical_data`.
+    """
+
+    @abstractmethod
+    def fetch_historical_data(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        timeframe: str = "1d",
+        use_cache: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Fetch historical market data for a given symbol and date range.
+
+        Args:
+            symbol: Standardized internal symbol string (e.g. 'RELIANCE', 'NIFTY50').
+            start_date: Start date string formatted as 'YYYY-MM-DD'.
+            end_date: End date string formatted as 'YYYY-MM-DD'.
+            timeframe: Data resolution (e.g. '1d' for daily, '1m' for 1-minute). Default is '1d'.
+            use_cache: Whether to read from/write to local disk cache. Default is True.
+
+        Returns:
+            A pandas DataFrame complying strictly with ADR-005.
+        """
+        pass
+
+
+================================================================================
+File: src/data/yahoo_provider.py
+================================================================================
+"""
+Yahoo Finance Data Provider Adapter.
+
+Implements BaseDataProvider to fetch historical stock and index OHLCV data from
+Yahoo Finance via the `yfinance` Python library, applying ADR-005 schema formatting
+and local Parquet disk caching.
+"""
+
+from pathlib import Path
+import logging
+import re
+import numpy as np
+import pandas as pd
+import yfinance as yf
+
+from src.data.base_provider import BaseDataProvider, validate_schema
+
+logger = logging.getLogger(__name__)
+
+# Standard directory for local data caching
+DEFAULT_CACHE_DIR = Path("data/cache")
+
+# Default mapping for popular Indian market index symbols
+INDEX_SYMBOL_MAP = {
+    "NIFTY50": "^NSEI",
+    "NIFTY": "^NSEI",
+    "BANKNIFTY": "^NSEBANK",
+    "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
+}
+
+
+class YahooFinanceProvider(BaseDataProvider):
+    """
+    Adapter for fetching historical market data from Yahoo Finance.
+
+    Transforms raw Yahoo Finance data into the standard ADR-005 internal format:
+    - Timezone: IST ('Asia/Kolkata')
+    - Columns: ['symbol', 'open', 'high', 'low', 'close', 'adj_close', 'volume', 'open_interest']
+    - Caching: Local Parquet files stored in `data/cache/`
+    """
+
+    def __init__(self, cache_dir: Path | str = DEFAULT_CACHE_DIR):
+        """
+        Initialize the YahooFinanceProvider adapter.
+
+        Args:
+            cache_dir: Directory path for saving and reading Parquet cache files.
+        """
+        self.cache_dir = Path(cache_dir)
+
+    def _get_provider_ticker(self, symbol: str) -> str:
+        """
+        Map an internal standard symbol to its Yahoo Finance provider ticker.
+
+        Examples:
+            'RELIANCE'   -> 'RELIANCE.NS'
+            'NIFTY50'    -> '^NSEI'
+            'BANKNIFTY'  -> '^NSEBANK'
+
+        Args:
+            symbol: Clean internal symbol string (e.g. 'RELIANCE').
+
+        Returns:
+            Yahoo Finance ticker string (e.g. 'RELIANCE.NS').
+        """
+        clean_symbol = symbol.strip().upper()
+
+        if clean_symbol in INDEX_SYMBOL_MAP:
+            return INDEX_SYMBOL_MAP[clean_symbol]
+
+        # If already formatted with .NS or ^, return as is; otherwise append .NS for Indian equities
+        if clean_symbol.endswith(".NS") or clean_symbol.startswith("^"):
+            return clean_symbol
+
+        return f"{clean_symbol}.NS"
+
+    def _format_date_for_filename(self, date_str: str) -> str:
+        """
+        Convert a date string ('YYYY-MM-DD') into compact filename format ('YYYYMMDD').
+        """
+        return date_str.replace("-", "").replace("/", "")
+
+    def get_cache_filepath(
+        self, symbol: str, start_date: str, end_date: str, timeframe: str
+    ) -> Path:
+        """
+        Generate the exact Parquet cache filepath for a given query.
+
+        Format: data/cache/{symbol}_{timeframe}_{start_date}_{end_date}.parquet
+        Example: data/cache/RELIANCE_1d_20240101_20240601.parquet
+
+        Note: Keying cache files by exact requested date range is a deliberate Phase 1 simplification.
+        """
+        start_str = self._format_date_for_filename(start_date)
+        end_str = self._format_date_for_filename(end_date)
+        filename = f"{symbol.upper()}_{timeframe}_{start_str}_{end_str}.parquet"
+        return self.cache_dir / filename
+
+    def fetch_historical_data(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        timeframe: str = "1d",
+        use_cache: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Fetch historical market data from Yahoo Finance or local Parquet cache.
+
+        Args:
+            symbol: Standardized internal symbol string (e.g. 'RELIANCE', 'NIFTY50').
+            start_date: Start date string ('YYYY-MM-DD').
+            end_date: End date string ('YYYY-MM-DD').
+            timeframe: Data resolution (e.g. '1d'). Default is '1d'.
+            use_cache: If True, check and save to local Parquet cache. Default is True.
+
+        Returns:
+            A pandas DataFrame complying strictly with ADR-005 schema.
+
+        Raises:
+            ValueError: If symbol format is invalid, data download fails, or data is empty.
+        """
+        clean_symbol = symbol.strip().upper()
+
+        # Check local cache first if enabled
+        cache_path = self.get_cache_filepath(
+            clean_symbol, start_date, end_date, timeframe
+        )
+        if use_cache and cache_path.exists():
+            logger.info(f"Loading cached data for {clean_symbol} from {cache_path}")
+            cached_df = pd.read_parquet(cache_path)
+
+            # Ensure index timezone is IST upon reading parquet
+            if cached_df.index.tz is None:
+                cached_df.index = cached_df.index.tz_localize("Asia/Kolkata")
+            else:
+                cached_df.index = cached_df.index.tz_convert("Asia/Kolkata")
+
+            return validate_schema(cached_df)
+
+        # Map symbol to Yahoo Finance ticker
+        provider_ticker = self._get_provider_ticker(clean_symbol)
+        logger.info(
+            f"Fetching data for '{clean_symbol}' (Yahoo ticker: '{provider_ticker}') from {start_date} to {end_date}"
+        )
+
+        try:
+            raw_df = yf.download(
+                provider_ticker,
+                start=start_date,
+                end=end_date,
+                interval=timeframe,
+                auto_adjust=False,  # Retain separate Close and Adj Close
+                progress=False,
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Network or API failure downloading data for '{clean_symbol}' ({provider_ticker}): {e}"
+            ) from e
+
+        if raw_df is None or raw_df.empty:
+            raise ValueError(
+                f"No data returned from Yahoo Finance for symbol '{clean_symbol}' ({provider_ticker}) "
+                f"between {start_date} and {end_date}."
+            )
+
+        # Flatten MultiIndex columns if present (yfinance return format)
+        if isinstance(raw_df.columns, pd.MultiIndex):
+            raw_df.columns = raw_df.columns.get_level_values(0)
+
+        # Normalize column names
+        col_rename_map = {
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Adj Close": "adj_close",
+            "Volume": "volume",
+        }
+        df = raw_df.rename(columns=col_rename_map).copy()
+
+        # Fallback if adj_close is not provided
+        if "adj_close" not in df.columns and "close" in df.columns:
+            df["adj_close"] = df["close"]
+
+        # Populate internal symbol column (never use raw provider ticker string)
+        df["symbol"] = clean_symbol
+
+        # Populate open_interest column (NaN for Yahoo Finance)
+        df["open_interest"] = np.nan
+
+        # Format timestamp index
+        df.index.name = "timestamp"
+
+        # Localize or convert index timezone to IST ('Asia/Kolkata')
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("Asia/Kolkata")
+        else:
+            df.index = df.index.tz_convert("Asia/Kolkata")
+
+        # Sort chronologically by timestamp
+        df = df.sort_index()
+
+        # Reorder columns to match ADR-005 standard
+        standard_cols = [
+            "symbol",
+            "open",
+            "high",
+            "low",
+            "close",
+            "adj_close",
+            "volume",
+            "open_interest",
+        ]
+        df = df[standard_cols]
+
+        # Ensure correct numeric data types
+        numeric_cols = ["open", "high", "low", "close", "adj_close", "volume", "open_interest"]
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # Validate final DataFrame against ADR-005 schema
+        validated_df = validate_schema(df)
+
+        # Save to local Parquet cache if caching enabled
+        if use_cache:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            validated_df.to_parquet(cache_path)
+            logger.info(f"Saved data to local cache: {cache_path}")
+
+        return validated_df
+
+
+================================================================================
+File: src/orchestrator/__init__.py
+================================================================================
+"""
+Pipeline Orchestrator Module for coordinating Data -> Strategy -> Risk -> Logging -> Backtest execution.
+"""
+
+from src.orchestrator.runner import PipelineRunner
+
+__all__ = ["PipelineRunner"]
+
+
+================================================================================
+File: src/orchestrator/runner.py
+================================================================================
+"""
+Pipeline Orchestrator Runner.
+
+Coordinates end-to-end processing across:
+Data Ingestion (YahooFinanceProvider) -> Strategy Engine -> Risk Management -> Audit Logging -> Backtest Engine.
+"""
+
+from typing import Dict, Any, Optional
+from src.data.yahoo_provider import YahooFinanceProvider
+from src.strategies.sma_cross import SMACrossoverStrategy
+from src.strategies.base_strategy import BaseStrategy
+from src.risk.risk_manager import RiskManager
+from src.audit_log.logger import AuditLogger
+from src.backtester.engine import BacktestEngine
+
+
+class PipelineRunner:
+    """
+    Orchestrates execution across all pipeline modules.
+    """
+
+    def __init__(
+        self,
+        provider: Optional[YahooFinanceProvider] = None,
+        strategy: Optional[BaseStrategy] = None,
+        risk_manager: Optional[RiskManager] = None,
+        audit_logger: Optional[AuditLogger] = None,
+        backtest_engine: Optional[BacktestEngine] = None,
+    ):
+        """
+        Initialize the PipelineRunner with modular components.
+        """
+        self.provider = provider or YahooFinanceProvider()
+        self.strategy = strategy or SMACrossoverStrategy()
+        self.risk_manager = risk_manager or RiskManager()
+        self.audit_logger = audit_logger or AuditLogger()
+        self.backtest_engine = backtest_engine or BacktestEngine(
+            strategy=self.strategy, risk_manager=self.risk_manager
+        )
+
+    def run_pipeline(
+        self, symbol: str, start_date: str, end_date: str
+    ) -> Dict[str, Any]:
+        """
+        Execute end-to-end pipeline for a given symbol and date range.
+
+        Args:
+            symbol: Standardized internal symbol string (e.g. 'RELIANCE').
+            start_date: Start date YYYY-MM-DD.
+            end_date: End date YYYY-MM-DD.
+
+        Returns:
+            Dictionary containing backtest metrics and list of trades.
+        """
+        # 1. Fetch data via Data Ingestion Layer
+        df = self.provider.fetch_historical_data(
+            symbol=symbol, start_date=start_date, end_date=end_date
+        )
+
+        # 2. Generate signals via Strategy Engine
+        signals = self.strategy.generate_signals(df)
+
+        # 3. Log signals via Audit Logger
+        for signal in signals:
+            self.audit_logger.log_signal(
+                signal=signal,
+                passed_rule_8=True,
+                rejection_reason=None,
+            )
+
+        # 4. Run Backtesting Engine
+        result = self.backtest_engine.run(df)
+        return result
+
+
+================================================================================
+File: src/risk/__init__.py
+================================================================================
+"""
+Risk & Position Management Engine module.
+
+Exports RiskManager for position sizing and stop-loss/target calculation.
+"""
+
+from src.risk.risk_manager import RiskManager
+
+__all__ = ["RiskManager"]
+
+
+================================================================================
+File: src/risk/risk_manager.py
+================================================================================
+"""
+Risk & Position Management Engine (src/risk/).
+
+Defines RiskManager for position sizing, ATR/percentage stop-loss, and target price calculations.
+"""
+
+from typing import Optional, Tuple
+
+
+class RiskManager:
+    """
+    Manages trade position sizing, stop-loss calculation, and target pricing.
+    """
+
+    def __init__(
+        self,
+        account_capital: float = 100000.0,
+        max_risk_per_trade_pct: float = 0.02,
+        risk_reward_ratio: float = 2.0,
+    ):
+        """
+        Initialize the RiskManager.
+
+        Args:
+            account_capital: Total portfolio capital (default 100,000.0).
+            max_risk_per_trade_pct: Maximum capital risk per trade as decimal (default 0.02 = 2%).
+            risk_reward_ratio: Reward-to-Risk multiplier for target price (default 2.0).
+        """
+        self.account_capital = account_capital
+        self.max_risk_per_trade_pct = max_risk_per_trade_pct
+        self.risk_reward_ratio = risk_reward_ratio
+
+    def calculate_stop_and_target(
+        self, entry_price: float, action: str, atr: Optional[float] = None
+    ) -> Tuple[float, float]:
+        """
+        Calculate stop-loss and profit target prices.
+
+        Args:
+            entry_price: Entry trigger price.
+            action: Trade action ('BUY' or 'SELL').
+            atr: Optional Average True Range value. If provided and > 0, stop distance = 1.5 * ATR.
+                 Otherwise default stop distance = 2% of entry price.
+
+        Returns:
+            Tuple of (stop_loss, target_price).
+        """
+        if entry_price <= 0:
+            raise ValueError("Entry price must be positive.")
+
+        if atr is not None and atr > 0:
+            distance = 1.5 * atr
+        else:
+            distance = 0.02 * entry_price
+
+        action_upper = action.upper()
+        if action_upper == "BUY":
+            stop_loss = round(entry_price - distance, 2)
+            target_price = round(entry_price + (distance * self.risk_reward_ratio), 2)
+        elif action_upper == "SELL":
+            stop_loss = round(entry_price + distance, 2)
+            target_price = round(entry_price - (distance * self.risk_reward_ratio), 2)
+        else:
+            raise ValueError(f"Invalid trade action '{action}'. Must be 'BUY' or 'SELL'.")
+
+        return stop_loss, target_price
+
+    def calculate_position_size(
+        self, entry_price: float, stop_loss: float, lot_size: int = 1
+    ) -> int:
+        """
+        Calculate position sizing in units/shares based on account risk capital.
+
+        Args:
+            entry_price: Price per share/contract at entry.
+            stop_loss: Price per share/contract at stop-loss.
+            lot_size: Minimum trading lot increment (default 1).
+
+        Returns:
+            Position size rounded down to the nearest lot_size (at least 1 lot_size).
+        """
+        if entry_price <= 0:
+            return lot_size
+
+        max_risk_amount = self.account_capital * self.max_risk_per_trade_pct
+        risk_per_unit = abs(entry_price - stop_loss)
+
+        if risk_per_unit <= 0:
+            return lot_size
+
+        raw_shares = max_risk_amount / risk_per_unit
+        num_lots = int(raw_shares // lot_size)
+        position_size = max(lot_size, num_lots * lot_size)
+
+        return position_size
+
+
+================================================================================
+File: src/strategies/__init__.py
+================================================================================
+"""
+Strategy Engine Module for the Indian Option Market platform.
+
+Provides BaseStrategy interface, Signal data structure, Rule 8 quality filtering,
+and concrete trading strategy implementations.
+"""
+
+from src.strategies.base_strategy import Signal, BaseStrategy
+from src.strategies.sma_cross import SMACrossoverStrategy
+
+__all__ = [
+    "Signal",
+    "BaseStrategy",
+    "SMACrossoverStrategy",
+]
+
+
+================================================================================
+File: src/strategies/base_strategy.py
+================================================================================
+"""
+Base Strategy Interface and Signal Data Structure.
+
+Defines:
+1. Signal: Dataclass representing a generated trade setup.
+2. BaseStrategy: Abstract base class for all trading strategies with Rule 8 signal filtering.
+"""
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+import pandas as pd
+
+
+@dataclass
+class Signal:
+    """
+    Standard trade signal emitted by strategy modules.
+
+    Attributes:
+        symbol: Standardized internal stock/index symbol (e.g. 'RELIANCE').
+        timestamp: Signal generation timestamp (datetime or pd.Timestamp).
+        action: Trade direction ('BUY' or 'SELL').
+        strategy_name: Identifier of the strategy generating the signal.
+        confidence: Signal confidence score (0.0 to 1.0).
+        entry_price: Trigger price at signal generation.
+        target_price: Optional profit target price.
+        stop_loss: Optional stop-loss price.
+        metadata: Optional dictionary for Greeks, IV, indicators, and additional context.
+    """
+
+    symbol: str
+    timestamp: Any
+    action: str
+    strategy_name: str
+    confidence: float
+    entry_price: float
+    target_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class BaseStrategy(ABC):
+    """
+    Abstract Base Class for all Strategy Engine modules.
+
+    All strategy implementations (e.g. SMACrossoverStrategy) must inherit from this
+    class and implement `generate_signals`.
+    """
+
+    def __init__(self, name: str = "BaseStrategy"):
+        """Initialize base strategy with a name."""
+        self.name = name
+
+    def filter_signal_rule_8(self, signal: Signal) -> bool:
+        """
+        Baseline Rule 8 Quality Filter (per Core.md Rule 8 & Quant_Rules.md).
+
+        Suppresses low-quality or noisy trade signals.
+        Rejects any signal with confidence < 0.60.
+
+        Args:
+            signal: The candidate Signal instance to evaluate.
+
+        Returns:
+            True if the signal passes Rule 8 quality filtering, False if suppressed.
+        """
+        if signal is None:
+            return False
+
+        if signal.confidence < 0.60:
+            return False
+
+        return True
+
+    @abstractmethod
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        """
+        Generate trade signals from an ADR-005 compliant market data DataFrame.
+
+        Args:
+            df: Standardized market data DataFrame.
+
+        Returns:
+            List of validated Signal objects that passed Rule 8 quality filtering.
+        """
+        pass
+
+
+================================================================================
+File: src/strategies/sma_cross.py
+================================================================================
+"""
+Simple Moving Average (SMA) Crossover Strategy.
+
+Implements a baseline dual moving average crossover strategy (20 SMA vs 50 SMA)
+operating on ADR-005 compliant market data DataFrames. Emits BUY signals when
+the fast SMA crosses above the slow SMA, subject to Rule 8 quality filtering.
+"""
+
+from typing import List, Optional
+import pandas as pd
+
+from src.strategies.base_strategy import BaseStrategy, Signal
+
+
+class SMACrossoverStrategy(BaseStrategy):
+    """
+    Moving Average Crossover Strategy (20 SMA vs 50 SMA).
+
+    Generates BUY signals on bullish crossovers. Signals are evaluated
+    against Rule 8 (confidence >= 0.60) before emission.
+    """
+
+    def __init__(
+        self,
+        fast_period: int = 20,
+        slow_period: int = 50,
+        name: str = "SMACrossover_20_50",
+    ):
+        """
+        Initialize the SMA Crossover Strategy parameters.
+
+        Args:
+            fast_period: Lookback window for the fast moving average (default 20).
+            slow_period: Lookback window for the slow moving average (default 50).
+            name: Strategy name identifier.
+        """
+        super().__init__(name=name)
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        """
+        Generate trade signals for a given market data DataFrame.
+
+        Args:
+            df: Standardized market data DataFrame conforming to ADR-005.
+
+        Returns:
+            List of Signals that pass Rule 8 filtering (confidence >= 0.60).
+        """
+        if df is None or df.empty or len(df) < self.slow_period:
+            return []
+
+        # Make a shallow copy to calculate indicators without mutating input df
+        data = df.copy()
+        symbol = str(data["symbol"].iloc[0])
+
+        # Calculate fast and slow Simple Moving Averages
+        data["sma_fast"] = data["close"].rolling(window=self.fast_period).mean()
+        data["sma_slow"] = data["close"].rolling(window=self.slow_period).mean()
+
+        signals: List[Signal] = []
+
+        # Iterate from slow_period onwards to check for crossovers
+        for i in range(self.slow_period, len(data)):
+            curr_row = data.iloc[i]
+            prev_row = data.iloc[i - 1]
+
+            # Bullish Crossover condition: fast SMA crosses above slow SMA
+            prev_fast = prev_row["sma_fast"]
+            prev_slow = prev_row["sma_slow"]
+            curr_fast = curr_row["sma_fast"]
+            curr_slow = curr_row["sma_slow"]
+
+            if pd.isna(prev_fast) or pd.isna(prev_slow) or pd.isna(curr_fast) or pd.isna(curr_slow):
+                continue
+
+            if prev_fast <= prev_slow and curr_fast > curr_slow:
+                # Calculate trend strength
+                price = float(curr_row["close"])
+                diff = (curr_fast - curr_slow) / price
+
+                # Assign confidence: 0.80 for strong momentum diff, 0.65 for baseline crossover
+                confidence = 0.80 if diff >= 0.005 else 0.65
+
+                # Define target and stop-loss estimates (e.g. 2% target, 1% stop)
+                target_price = round(price * 1.02, 2)
+                stop_loss = round(price * 0.99, 2)
+
+                signal = Signal(
+                    symbol=symbol,
+                    timestamp=curr_row.name,  # timestamp index
+                    action="BUY",
+                    strategy_name=self.name,
+                    confidence=confidence,
+                    entry_price=price,
+                    target_price=target_price,
+                    stop_loss=stop_loss,
+                    metadata={
+                        "sma_fast": float(curr_fast),
+                        "sma_slow": float(curr_slow),
+                        "fast_period": self.fast_period,
+                        "slow_period": self.slow_period,
+                    },
+                )
+
+                # Filter signal through Rule 8 baseline quality filter before appending
+                if self.filter_signal_rule_8(signal):
+                    signals.append(signal)
+
+        return signals
+
+
+================================================================================
+File: tests/test_audit_log.py
+================================================================================
+"""
+Unit tests for Audit Logging System (src/audit_log/).
+
+Per CodingStandards.md:
+- Tests mirror src/ structure (src/audit_log/ -> tests/test_audit_log.py).
+- Tests cover JSONL log file writing and record formatting.
+"""
+
+import json
+from pathlib import Path
+import tempfile
+import pandas as pd
+import pytest
+
+from src.audit_log.logger import AuditLogger
+from src.strategies.base_strategy import Signal
+
+
+def test_audit_logger_write():
+    """Test that AuditLogger appends JSON-Lines records correctly."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        log_file = Path(tmp_dir) / "signals.jsonl"
+        logger = AuditLogger(log_path=log_file)
+
+        ts = pd.Timestamp("2024-01-01 09:15:00", tz="Asia/Kolkata")
+        sig = Signal(
+            symbol="RELIANCE",
+            timestamp=ts,
+            action="BUY",
+            strategy_name="SMACrossover",
+            confidence=0.80,
+            entry_price=2500.0,
+            target_price=2550.0,
+            stop_loss=2475.0,
+        )
+
+        record = logger.log_signal(sig, passed_rule_8=True, rejection_reason=None)
+
+        assert log_file.exists()
+        with open(log_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        assert len(lines) == 1
+        data = json.loads(lines[0])
+        assert data["symbol"] == "RELIANCE"
+        assert data["strategy_name"] == "SMACrossover"
+        assert data["confidence"] == 0.80
+        assert data["passed_rule_8"] is True
+        assert data["rejection_reason"] is None
+
+
+================================================================================
+File: tests/test_backtester.py
+================================================================================
+"""
+Unit tests for Backtesting Engine (src/backtester/).
+
+Per CodingStandards.md:
+- Tests mirror src/ structure (src/backtester/ -> tests/test_backtester.py).
+- Tests cover synthetic Black-Scholes pricing, Trade tracking, and BacktestEngine execution.
+"""
+
+from unittest.mock import MagicMock
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.backtester.synthetic_options import calculate_option_price
+from src.backtester.trade import Trade
+from src.backtester.engine import BacktestEngine
+from src.strategies.sma_cross import SMACrossoverStrategy
+from src.strategies.base_strategy import Signal, BaseStrategy
+
+
+@pytest.fixture
+def mock_adr005_df() -> pd.DataFrame:
+    """Fixture returning a mock 100-row ADR-005 DataFrame with a SMA crossover."""
+    dates = pd.date_range(start="2024-01-01", periods=100, freq="D", tz="Asia/Kolkata")
+    prices = [100.0 - (i * 0.1) for i in range(50)] + [
+        95.0 + ((i - 50) * 1.5) for i in range(50, 100)
+    ]
+
+    df = pd.DataFrame(
+        {
+            "symbol": ["RELIANCE"] * 100,
+            "open": [p - 0.5 for p in prices],
+            "high": [p + 1.0 for p in prices],
+            "low": [p - 1.0 for p in prices],
+            "close": prices,
+            "adj_close": prices,
+            "volume": [100000] * 100,
+            "open_interest": [np.nan] * 100,
+        },
+        index=dates,
+    )
+    df.index.name = "timestamp"
+    return df
+
+
+def test_calculate_option_price_black_scholes():
+    """Test Black-Scholes pricing calculation for Call and Put options."""
+    # ATM Call option with 30 DTE should have positive premium
+    call_price = calculate_option_price("c", S=100.0, K=100.0, days_to_expiry=30.0)
+    assert call_price > 0.0
+
+    # ATM Put option with 30 DTE should have positive premium
+    put_price = calculate_option_price("p", S=100.0, K=100.0, days_to_expiry=30.0)
+    assert put_price > 0.0
+
+    # Expired Call option (days_to_expiry = 0) returns intrinsic value max(S - K, 0)
+    assert calculate_option_price("c", S=110.0, K=100.0, days_to_expiry=0.0) == 10.0
+    assert calculate_option_price("c", S=90.0, K=100.0, days_to_expiry=0.0) == 0.0
+
+    # Expired Put option (days_to_expiry = 0) returns intrinsic value max(K - S, 0)
+    assert calculate_option_price("p", S=90.0, K=100.0, days_to_expiry=0.0) == 10.0
+    assert calculate_option_price("p", S=110.0, K=100.0, days_to_expiry=0.0) == 0.0
+
+
+def test_backtest_engine_run(mock_adr005_df: pd.DataFrame):
+    """Test BacktestEngine execution with SMACrossoverStrategy."""
+    strategy = SMACrossoverStrategy(fast_period=20, slow_period=50)
+    engine = BacktestEngine(strategy=strategy, initial_capital=100000.0)
+
+    result = engine.run(mock_adr005_df)
+
+    assert "metrics" in result
+    assert "trades" in result
+
+    metrics = result["metrics"]
+    trades = result["trades"]
+
+    assert metrics["total_trades"] == len(trades)
+    assert metrics["total_trades"] >= 1
+    assert "win_rate" in metrics
+    assert "total_pnl" in metrics
+    assert metrics["final_capital"] == round(100000.0 + metrics["total_pnl"], 2)
+
+    trade = trades[0]
+    assert isinstance(trade, Trade)
+    assert trade.symbol == "RELIANCE"
+    assert trade.trade_type == "STOCK"
+    assert trade.entry_price > 0.0
+    assert trade.exit_price > 0.0
+    assert trade.quantity > 0
+
+
+class DummyOptionStrategy(BaseStrategy):
+    """Dummy strategy generating an OPTION trade signal."""
+
+    def generate_signals(self, df: pd.DataFrame) -> list:
+        if df.empty:
+            return []
+        ts = df.index[10]
+        price = float(df["close"].iloc[10])
+        return [
+            Signal(
+                symbol="NIFTY50",
+                timestamp=ts,
+                action="BUY",
+                strategy_name="OptionTest",
+                confidence=0.80,
+                entry_price=price,
+                metadata={"type": "OPTION"},
+            )
+        ]
+
+
+def test_backtest_engine_option_trade(mock_adr005_df: pd.DataFrame):
+    """Test BacktestEngine processing option trade signals with synthetic Black-Scholes pricing."""
+    strategy = DummyOptionStrategy(name="OptionTest")
+    engine = BacktestEngine(strategy=strategy, initial_capital=100000.0)
+
+    result = engine.run(mock_adr005_df)
+    trades = result["trades"]
+
+    assert len(trades) == 1
+    trade = trades[0]
+
+    assert trade.trade_type == "OPTION"
+    assert trade.quantity == 100
+    assert trade.entry_price > 0.0
+    assert trade.exit_price > 0.0
+    assert "strike" in trade.metadata
+
+
+def test_backtest_engine_risk_based_exit():
+    """Test that BacktestEngine exits at profit target or stop loss price."""
+    dates = pd.date_range("2024-01-01", periods=10, freq="D", tz="Asia/Kolkata")
+    # Day 0: entry at 100. Day 1: high = 105 (triggers 104 target price).
+    df = pd.DataFrame(
+        {
+            "symbol": ["TCS"] * 10,
+            "open": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0, 109.0],
+            "high": [101.0, 105.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0, 109.0, 110.0],
+            "low": [99.0, 100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0],
+            "close": [100.0, 102.0, 102.5, 103.5, 104.5, 105.5, 106.5, 107.5, 108.5, 109.5],
+            "adj_close": [100.0, 102.0, 102.5, 103.5, 104.5, 105.5, 106.5, 107.5, 108.5, 109.5],
+            "volume": [1000] * 10,
+            "open_interest": [np.nan] * 10,
+        },
+        index=dates,
+    )
+    df.index.name = "timestamp"
+
+    class MockStrategy(BaseStrategy):
+        def generate_signals(self, df_in):
+            return [
+                Signal(
+                    symbol="TCS",
+                    timestamp=df_in.index[0],
+                    action="BUY",
+                    strategy_name="Mock",
+                    confidence=0.80,
+                    entry_price=100.0,
+                    stop_loss=98.0,
+                    target_price=104.0,
+                )
+            ]
+
+    engine = BacktestEngine(strategy=MockStrategy())
+    res = engine.run(df)
+    trade = res["trades"][0]
+
+    # Target 104 was hit on Day 1 (high = 105)
+    assert trade.exit_price == 104.0
+    assert trade.pnl > 0
+
+
+================================================================================
+File: tests/test_data.py
+================================================================================
+"""
+Unit tests for Data Ingestion Layer (src/data/).
+
+Per CodingStandards.md:
+- Tests mirror src/ structure (src/data/ -> tests/test_data.py).
+- Tests cover schema validation, YahooFinanceProvider data fetching,
+  IST timezone handling, internal symbol enforcement, and Parquet caching.
+"""
+
+from unittest.mock import patch, MagicMock
+from pathlib import Path
+import tempfile
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.data.base_provider import validate_schema, BaseDataProvider
+from src.data.yahoo_provider import YahooFinanceProvider, DEFAULT_CACHE_DIR
+
+
+@pytest.fixture
+def sample_valid_df() -> pd.DataFrame:
+    """Fixture returning a valid ADR-005 compliant DataFrame."""
+    dates = pd.date_range(start="2024-01-01", periods=5, freq="D", tz="Asia/Kolkata")
+    df = pd.DataFrame(
+        {
+            "symbol": ["RELIANCE"] * 5,
+            "open": [2500.0, 2510.0, 2505.0, 2520.0, 2530.0],
+            "high": [2520.0, 2530.0, 2525.0, 2540.0, 2550.0],
+            "low": [2490.0, 2500.0, 2495.0, 2510.0, 2520.0],
+            "close": [2515.0, 2505.0, 2520.0, 2535.0, 2545.0],
+            "adj_close": [2510.0, 2500.0, 2515.0, 2530.0, 2540.0],
+            "volume": [1000000, 1200000, 1100000, 1300000, 1400000],
+            "open_interest": [np.nan] * 5,
+        },
+        index=dates,
+    )
+    df.index.name = "timestamp"
+    return df
+
+
+def test_validate_schema_valid(sample_valid_df: pd.DataFrame):
+    """Test that a compliant DataFrame passes schema validation."""
+    res = validate_schema(sample_valid_df)
+    assert isinstance(res, pd.DataFrame)
+    assert res.index.name == "timestamp"
+    assert str(res.index.tz) == "Asia/Kolkata"
+
+
+def test_validate_schema_naive_timezone_fails(sample_valid_df: pd.DataFrame):
+    """Test that a naive timestamp index fails schema validation."""
+    df = sample_valid_df.copy()
+    df.index = df.index.tz_localize(None)  # Remove timezone info
+    with pytest.raises(ValueError, match="must be timezone-aware"):
+        validate_schema(df)
+
+
+def test_validate_schema_wrong_timezone_fails(sample_valid_df: pd.DataFrame):
+    """Test that a non-IST timezone index fails schema validation."""
+    df = sample_valid_df.copy()
+    df.index = df.index.tz_convert("UTC")
+    with pytest.raises(ValueError, match="must be in Asia/Kolkata timezone"):
+        validate_schema(df)
+
+
+def test_validate_schema_missing_column_fails(sample_valid_df: pd.DataFrame):
+    """Test that missing required columns fail schema validation."""
+    df = sample_valid_df.drop(columns=["adj_close"])
+    with pytest.raises(ValueError, match="columns do not match ADR-005 standard"):
+        validate_schema(df)
+
+
+def test_validate_schema_invalid_symbol_suffix_fails(sample_valid_df: pd.DataFrame):
+    """Test that provider-specific symbol suffixes fail schema validation."""
+    df = sample_valid_df.copy()
+    df["symbol"] = "RELIANCE.NS"
+    with pytest.raises(ValueError, match="Invalid internal symbol 'RELIANCE.NS'"):
+        validate_schema(df)
+
+
+def test_validate_schema_lowercase_symbol_fails(sample_valid_df: pd.DataFrame):
+    """Test that lowercase symbols fail schema validation."""
+    df = sample_valid_df.copy()
+    df["symbol"] = "reliance"
+    with pytest.raises(ValueError, match="Invalid internal symbol 'reliance'"):
+        validate_schema(df)
+
+
+def test_validate_schema_special_symbols_valid(sample_valid_df: pd.DataFrame):
+    """Test that Indian stock symbols with & and - (M&M, BAJAJ-AUTO) pass schema validation."""
+    df_mm = sample_valid_df.copy()
+    df_mm["symbol"] = "M&M"
+    assert validate_schema(df_mm) is not None
+
+    df_bajaj = sample_valid_df.copy()
+    df_bajaj["symbol"] = "BAJAJ-AUTO"
+    assert validate_schema(df_bajaj) is not None
+
+
+def test_validate_schema_non_float64_price_dtype_fails(sample_valid_df: pd.DataFrame):
+    """Test that price columns of non-float64 dtype (e.g. int64, float32) fail schema validation."""
+    df_int = sample_valid_df.copy()
+    df_int["close"] = df_int["close"].astype("int64")
+    with pytest.raises(ValueError, match="Column 'close' must be of dtype float64"):
+        validate_schema(df_int)
+
+    df_f32 = sample_valid_df.copy()
+    df_f32["open"] = df_f32["open"].astype("float32")
+    with pytest.raises(ValueError, match="Column 'open' must be of dtype float64"):
+        validate_schema(df_f32)
+
+
+def test_yahoo_provider_symbol_mapping():
+    """Test mapping from internal symbols to Yahoo Finance tickers."""
+    provider = YahooFinanceProvider()
+    assert provider._get_provider_ticker("RELIANCE") == "RELIANCE.NS"
+    assert provider._get_provider_ticker("M&M") == "M&M.NS"
+    assert provider._get_provider_ticker("BAJAJ-AUTO") == "BAJAJ-AUTO.NS"
+    assert provider._get_provider_ticker("TCS") == "TCS.NS"
+    assert provider._get_provider_ticker("NIFTY50") == "^NSEI"
+    assert provider._get_provider_ticker("BANKNIFTY") == "^NSEBANK"
+    assert provider._get_provider_ticker("RELIANCE.NS") == "RELIANCE.NS"
+    assert provider._get_provider_ticker("^NSEI") == "^NSEI"
+
+
+def test_yahoo_provider_cache_filename_format():
+    """Test cache filename formatting with exact date range."""
+    provider = YahooFinanceProvider(cache_dir="data/cache")
+    path = provider.get_cache_filepath("RELIANCE", "2024-01-01", "2024-06-01", "1d")
+    assert path.name == "RELIANCE_1d_20240101_20240601.parquet"
+
+
+@patch("yfinance.download")
+def test_yahoo_provider_fetch_data_mocked(mock_download: MagicMock):
+    """Test YahooFinanceProvider fetching and transforming raw data correctly."""
+    # Setup mock yfinance response
+    dates = pd.date_range("2024-01-01", periods=3, freq="D")
+    raw_df = pd.DataFrame(
+        {
+            "Open": [100.0, 101.0, 102.0],
+            "High": [105.0, 106.0, 107.0],
+            "Low": [99.0, 100.0, 101.0],
+            "Close": [104.0, 105.0, 106.0],
+            "Adj Close": [103.5, 104.5, 105.5],
+            "Volume": [5000, 6000, 7000],
+        },
+        index=dates,
+    )
+    mock_download.return_value = raw_df
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        provider = YahooFinanceProvider(cache_dir=tmp_dir)
+        df = provider.fetch_historical_data(
+            symbol="RELIANCE",
+            start_date="2024-01-01",
+            end_date="2024-01-03",
+            timeframe="1d",
+            use_cache=True,
+        )
+
+        # Verify yfinance download argument
+        mock_download.assert_called_once_with(
+            "RELIANCE.NS",
+            start="2024-01-01",
+            end="2024-01-03",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+        )
+
+        # Verify schema compliance
+        assert list(df.columns) == [
+            "symbol",
+            "open",
+            "high",
+            "low",
+            "close",
+            "adj_close",
+            "volume",
+            "open_interest",
+        ]
+        assert df["symbol"].iloc[0] == "RELIANCE"
+        assert str(df.index.tz) == "Asia/Kolkata"
+        assert np.isnan(df["open_interest"].iloc[0])
+
+        # Verify cache file creation
+        expected_cache_file = (
+            Path(tmp_dir) / "RELIANCE_1d_20240101_20240103.parquet"
+        )
+        assert expected_cache_file.exists()
+
+
+@patch("yfinance.download")
+def test_yahoo_provider_cache_hit(mock_download: MagicMock):
+    """Test that subsequent calls use the local cache file and do not call yfinance."""
+    dates = pd.date_range("2024-01-01", periods=2, freq="D")
+    raw_df = pd.DataFrame(
+        {
+            "Open": [100.0, 101.0],
+            "High": [105.0, 106.0],
+            "Low": [99.0, 100.0],
+            "Close": [104.0, 105.0],
+            "Adj Close": [104.0, 105.0],
+            "Volume": [5000, 6000],
+        },
+        index=dates,
+    )
+    mock_download.return_value = raw_df
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        provider = YahooFinanceProvider(cache_dir=tmp_dir)
+
+        # First call downloads and populates cache
+        df1 = provider.fetch_historical_data(
+            "TCS", "2024-01-01", "2024-01-02", use_cache=True
+        )
+        assert mock_download.call_count == 1
+
+        # Second call should read directly from parquet cache without re-downloading
+        df2 = provider.fetch_historical_data(
+            "TCS", "2024-01-01", "2024-01-02", use_cache=True
+        )
+        assert mock_download.call_count == 1  # Still 1 call!
+
+        pd.testing.assert_frame_equal(df1, df2)
+
+
+@patch("yfinance.download")
+def test_yahoo_provider_empty_data_raises_error(mock_download: MagicMock):
+    """Test that empty response from provider raises ValueError."""
+    mock_download.return_value = pd.DataFrame()  # Empty dataframe
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        provider = YahooFinanceProvider(cache_dir=tmp_dir)
+        with pytest.raises(ValueError, match="No data returned from Yahoo Finance"):
+            provider.fetch_historical_data("INVALID_STOCK", "2024-01-01", "2024-01-02")
+
+
+================================================================================
+File: tests/test_risk.py
+================================================================================
+"""
+Unit tests for Risk Management Engine (src/risk/).
+
+Per CodingStandards.md:
+- Tests mirror src/ structure (src/risk/ -> tests/test_risk.py).
+- Tests cover stop-loss/target calculations and position sizing logic.
+"""
+
+import pytest
+from src.risk.risk_manager import RiskManager
+
+
+def test_risk_manager_default_stop_and_target():
+    """Test 2% default percentage stop loss and 2:1 target calculation for BUY and SELL."""
+    rm = RiskManager(account_capital=100000.0, max_risk_per_trade_pct=0.02, risk_reward_ratio=2.0)
+
+    # Entry = 100.0, BUY action. Distance = 2.0 (2%). Stop = 98.0, Target = 104.0
+    stop, target = rm.calculate_stop_and_target(entry_price=100.0, action="BUY")
+    assert stop == 98.0
+    assert target == 104.0
+
+    # Entry = 100.0, SELL action. Distance = 2.0. Stop = 102.0, Target = 96.0
+    stop_sell, target_sell = rm.calculate_stop_and_target(entry_price=100.0, action="SELL")
+    assert stop_sell == 102.0
+    assert target_sell == 96.0
+
+
+def test_risk_manager_atr_stop_and_target():
+    """Test ATR-based stop loss calculation (1.5 * ATR)."""
+    rm = RiskManager(account_capital=100000.0, max_risk_per_trade_pct=0.02, risk_reward_ratio=2.0)
+
+    # Entry = 100.0, ATR = 4.0. Distance = 6.0. Stop = 94.0, Target = 112.0
+    stop, target = rm.calculate_stop_and_target(entry_price=100.0, action="BUY", atr=4.0)
+    assert stop == 94.0
+    assert target == 112.0
+
+
+def test_risk_manager_position_size():
+    """Test position sizing based on risk capital limits."""
+    rm = RiskManager(account_capital=100000.0, max_risk_per_trade_pct=0.02)
+    # Capital = 100,000, Max Risk = 2,000. Entry = 100, Stop = 98 -> Risk per unit = 2.0
+    # Shares = 2000 / 2.0 = 1000 shares
+    pos_size = rm.calculate_position_size(entry_price=100.0, stop_loss=98.0, lot_size=1)
+    assert pos_size == 1000
+
+    # With lot_size = 75 (F&O lot size) -> 1000 // 75 = 13 lots = 975 shares
+    pos_size_lots = rm.calculate_position_size(entry_price=100.0, stop_loss=98.0, lot_size=75)
+    assert pos_size_lots == 975
+
+
+def test_risk_manager_invalid_inputs():
+    """Test handling of invalid inputs."""
+    rm = RiskManager()
+    with pytest.raises(ValueError, match="Entry price must be positive"):
+        rm.calculate_stop_and_target(entry_price=-10.0, action="BUY")
+
+    with pytest.raises(ValueError, match="Invalid trade action"):
+        rm.calculate_stop_and_target(entry_price=100.0, action="HOLD")
+
+
+================================================================================
+File: tests/test_strategies.py
+================================================================================
+"""
+Unit tests for Strategy Engine (src/strategies/).
+
+Per CodingStandards.md:
+- Tests mirror src/ structure (src/strategies/ -> tests/test_strategies.py).
+- Tests cover Signal dataclass validation, BaseStrategy Rule 8 quality filtering,
+  and SMACrossoverStrategy crossover signal generation.
+"""
+
+from datetime import datetime
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.strategies.base_strategy import Signal, BaseStrategy
+from src.strategies.sma_cross import SMACrossoverStrategy
+
+
+@pytest.fixture
+def mock_adr005_df() -> pd.DataFrame:
+    """
+    Fixture creating a mock 100-row ADR-005 compliant DataFrame with a clear
+    20/50 SMA crossover around row 60.
+    """
+    dates = pd.date_range(start="2024-01-01", periods=100, freq="D", tz="Asia/Kolkata")
+
+    # Generate price series: flat/downtrend first 50 days, strong uptrend next 50 days
+    prices = [100.0 - (i * 0.1) for i in range(50)] + [
+        95.0 + ((i - 50) * 1.5) for i in range(50, 100)
+    ]
+
+    df = pd.DataFrame(
+        {
+            "symbol": ["RELIANCE"] * 100,
+            "open": [p - 0.5 for p in prices],
+            "high": [p + 1.0 for p in prices],
+            "low": [p - 1.0 for p in prices],
+            "close": prices,
+            "adj_close": prices,
+            "volume": [100000] * 100,
+            "open_interest": [np.nan] * 100,
+        },
+        index=dates,
+    )
+    df.index.name = "timestamp"
+    return df
+
+
+def test_signal_dataclass():
+    """Test Signal dataclass initialization and field attributes."""
+    ts = pd.Timestamp("2024-01-01 09:15:00", tz="Asia/Kolkata")
+    sig = Signal(
+        symbol="RELIANCE",
+        timestamp=ts,
+        action="BUY",
+        strategy_name="TestStrategy",
+        confidence=0.85,
+        entry_price=2500.0,
+        target_price=2550.0,
+        stop_loss=2475.0,
+        metadata={"greeks": {"delta": 0.5}},
+    )
+
+    assert sig.symbol == "RELIANCE"
+    assert sig.action == "BUY"
+    assert sig.confidence == 0.85
+    assert sig.entry_price == 2500.0
+    assert sig.target_price == 2550.0
+    assert sig.stop_loss == 2475.0
+    assert sig.metadata["greeks"]["delta"] == 0.5
+
+
+class DummyStrategy(BaseStrategy):
+    """Concrete dummy strategy for testing BaseStrategy filter logic."""
+
+    def generate_signals(self, df: pd.DataFrame):
+        return []
+
+
+def test_rule_8_filter():
+    """Test Rule 8 quality filtering (confidence < 0.60 rejected)."""
+    strat = DummyStrategy(name="Dummy")
+    ts = pd.Timestamp("2024-01-01", tz="Asia/Kolkata")
+
+    high_conf_sig = Signal(
+        symbol="TCS",
+        timestamp=ts,
+        action="BUY",
+        strategy_name="Dummy",
+        confidence=0.75,
+        entry_price=3000.0,
+    )
+    low_conf_sig = Signal(
+        symbol="TCS",
+        timestamp=ts,
+        action="BUY",
+        strategy_name="Dummy",
+        confidence=0.40,
+        entry_price=3000.0,
+    )
+
+    assert strat.filter_signal_rule_8(high_conf_sig) is True
+    assert strat.filter_signal_rule_8(low_conf_sig) is False
+
+
+def test_sma_crossover_strategy(mock_adr005_df: pd.DataFrame):
+    """Test SMACrossoverStrategy signal generation on ADR-005 DataFrame."""
+    strategy = SMACrossoverStrategy(fast_period=20, slow_period=50)
+    signals = strategy.generate_signals(mock_adr005_df)
+
+    assert isinstance(signals, list)
+    assert len(signals) >= 1
+
+    sig = signals[0]
+    assert isinstance(sig, Signal)
+    assert sig.symbol == "RELIANCE"
+    assert sig.action == "BUY"
+    assert sig.strategy_name == "SMACrossover_20_50"
+    assert sig.confidence >= 0.60  # Only Rule 8 passing signals emitted!
+    assert sig.entry_price > 0.0
+    assert sig.target_price is not None
+    assert sig.stop_loss is not None
+    assert "sma_fast" in sig.metadata
+    assert "sma_slow" in sig.metadata
+
+
+def test_sma_crossover_suppresses_low_confidence():
+    """Test that weak crossovers resulting in confidence < 0.60 are suppressed."""
+    strategy = SMACrossoverStrategy(fast_period=5, slow_period=10)
+
+    # Create price series with a tiny crossover yielding diff < 0.005 (confidence = 0.40)
+    dates = pd.date_range("2024-01-01", periods=20, freq="D", tz="Asia/Kolkata")
+    prices = [10.0] * 12 + [10.001, 10.002, 10.003, 10.004, 10.005, 10.006, 10.007, 10.008]
+    df = pd.DataFrame(
+        {
+            "symbol": ["TCS"] * 20,
+            "open": prices,
+            "high": prices,
+            "low": prices,
+            "close": prices,
+            "adj_close": prices,
+            "volume": [1000] * 20,
+            "open_interest": [np.nan] * 20,
+        },
+        index=dates,
+    )
+    df.index.name = "timestamp"
+
+    signals = strategy.generate_signals(df)
+    # The low-confidence crossover (0.40) must be suppressed by Rule 8 filter
+    for sig in signals:
+        assert sig.confidence >= 0.60
+
+

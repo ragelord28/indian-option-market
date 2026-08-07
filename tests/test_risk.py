@@ -3,7 +3,7 @@ Unit tests for Risk Management Engine (src/risk/).
 
 Per CodingStandards.md:
 - Tests mirror src/ structure (src/risk/ -> tests/test_risk.py).
-- Tests cover stop-loss/target calculations and position sizing logic.
+- Tests cover stop-loss/target calculations, position sizing logic, risk floor enforcement, and capital caps.
 """
 
 import pytest
@@ -48,6 +48,26 @@ def test_risk_manager_position_size():
     assert pos_size_lots == 975
 
 
+def test_risk_manager_position_size_returns_zero_on_risk_breach():
+    """Test Fix 1: position sizing returns 0 when risk limit yields 0 lots (does not force a trade)."""
+    rm = RiskManager(account_capital=100000.0, max_risk_per_trade_pct=0.02)  # Max risk = 2000
+    # Entry = 100.0, Stop = 1.0 -> Risk per unit = 99.0. Raw shares = 2000 / 99 = 20.2.
+    # With lot_size = 100 -> num_lots = 20 // 100 = 0 -> Returns 0!
+    pos_size = rm.calculate_position_size(entry_price=100.0, stop_loss=1.0, lot_size=100)
+    assert pos_size == 0
+
+
+def test_risk_manager_position_size_notional_cap():
+    """Test Fix 2: position sizing caps total notional value to account capital."""
+    rm = RiskManager(account_capital=10000.0, max_risk_per_trade_pct=0.50)  # Max risk = 5000
+    # Entry = 5000.0, Stop = 4999.0 -> Risk per unit = 1.0. Raw shares = 5000.
+    # But notional value 5000 * 5000 = 25,000,000 > account_capital 10,000.
+    # Capital cap reduces num_lots to max 2 shares (2 * 5000 = 10000 <= 10000).
+    pos_size = rm.calculate_position_size(entry_price=5000.0, stop_loss=4999.0, lot_size=1)
+    assert pos_size == 2
+    assert pos_size * 5000.0 <= 10000.0
+
+
 def test_risk_manager_invalid_inputs():
     """Test handling of invalid inputs."""
     rm = RiskManager()
@@ -56,3 +76,9 @@ def test_risk_manager_invalid_inputs():
 
     with pytest.raises(ValueError, match="Invalid trade action"):
         rm.calculate_stop_and_target(entry_price=100.0, action="HOLD")
+
+    with pytest.raises(ValueError, match="Entry price and risk per unit must be > 0"):
+        rm.calculate_position_size(entry_price=0.0, stop_loss=90.0)
+
+    with pytest.raises(ValueError, match="Entry price and risk per unit must be > 0"):
+        rm.calculate_position_size(entry_price=100.0, stop_loss=100.0)

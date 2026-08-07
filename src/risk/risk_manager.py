@@ -77,19 +77,25 @@ class RiskManager:
             lot_size: Minimum trading lot increment (default 1).
 
         Returns:
-            Position size rounded down to the nearest lot_size (at least 1 lot_size).
+            Position size rounded down to the nearest lot_size, respecting risk floor and notional capital cap.
         """
-        if entry_price <= 0:
-            return lot_size
-
-        max_risk_amount = self.account_capital * self.max_risk_per_trade_pct
         risk_per_unit = abs(entry_price - stop_loss)
 
-        if risk_per_unit <= 0:
-            return lot_size
+        if entry_price <= 0 or risk_per_unit <= 0:
+            raise ValueError("Entry price and risk per unit must be > 0")
 
+        max_risk_amount = self.account_capital * self.max_risk_per_trade_pct
         raw_shares = max_risk_amount / risk_per_unit
         num_lots = int(raw_shares // lot_size)
-        position_size = max(lot_size, num_lots * lot_size)
 
-        return position_size
+        # Fix 1 (The Floor): If num_lots == 0, return 0 (do not force a trade that breaches risk)
+        if num_lots == 0:
+            return 0
+
+        # Fix 2 (The Notional Cap): Ensure total notional value does not exceed account capital
+        notional_value = num_lots * lot_size * entry_price
+        while notional_value > self.account_capital and num_lots > 0:
+            num_lots -= 1
+            notional_value = num_lots * lot_size * entry_price
+
+        return num_lots * lot_size

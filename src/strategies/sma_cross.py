@@ -104,8 +104,6 @@ class SMACrossoverStrategy(BaseStrategy):
                     },
                 )
 
-                # Filter signal through Rule 8 baseline quality filter before appending
-                if self.filter_signal_rule_8(signal):
-                    signals.append(signal)
+                signals.append(signal)
 
         return signals

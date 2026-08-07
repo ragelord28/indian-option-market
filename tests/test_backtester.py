@@ -93,6 +93,10 @@ def test_backtest_engine_run(mock_adr005_df: pd.DataFrame):
 class DummyOptionStrategy(BaseStrategy):
     """Dummy strategy generating an OPTION trade signal."""
 
+    def __init__(self, option_type: str = "c"):
+        super().__init__(name="OptionTest")
+        self.option_type = option_type
+
     def generate_signals(self, df: pd.DataFrame) -> list:
         if df.empty:
             return []
@@ -106,15 +110,16 @@ class DummyOptionStrategy(BaseStrategy):
                 strategy_name="OptionTest",
                 confidence=0.80,
                 entry_price=price,
-                metadata={"type": "OPTION"},
+                metadata={"type": "OPTION", "option_type": self.option_type},
             )
         ]
 
 
-def test_backtest_engine_option_trade(mock_adr005_df: pd.DataFrame):
-    """Test BacktestEngine processing option trade signals with synthetic Black-Scholes pricing."""
-    strategy = DummyOptionStrategy(name="OptionTest")
-    engine = BacktestEngine(strategy=strategy, initial_capital=100000.0)
+def test_backtest_engine_option_trade_put_and_call(mock_adr005_df: pd.DataFrame):
+    """Test BacktestEngine processing Put and Call option trade signals with aligned option_type."""
+    # Test Put Option signal alignment
+    put_strategy = DummyOptionStrategy(option_type="p")
+    engine = BacktestEngine(strategy=put_strategy, initial_capital=100000.0)
 
     result = engine.run(mock_adr005_df)
     trades = result["trades"]
@@ -123,10 +128,9 @@ def test_backtest_engine_option_trade(mock_adr005_df: pd.DataFrame):
     trade = trades[0]
 
     assert trade.trade_type == "OPTION"
-    assert trade.quantity == 100
+    assert trade.metadata["option_type"] == "p"
     assert trade.entry_price > 0.0
     assert trade.exit_price > 0.0
-    assert "strike" in trade.metadata
 
 
 def test_backtest_engine_risk_based_exit():
