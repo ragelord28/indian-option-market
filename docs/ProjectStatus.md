@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 3 — Minimal Backtesting Engine (`src/backtester/`)
-- **Status**: Phase 2 (Minimal Strategy Engine & Quant Rules) Complete. `Signal` dataclass, `BaseStrategy` with Rule 8 filtering, `SMACrossoverStrategy`, `docs/Quant_Rules.md`, `py_vollib` & `scipy` dependencies, and 17 unit tests implemented and committed.
+- **Active Phase**: Phase 4 — Risk & Signal Filtering (`src/risk/`, `src/signals/`)
+- **Status**: Phase 3 (Minimal Backtesting Engine) Complete. `Trade` dataclass, `calculate_option_price` (Black-Scholes synthetic option pricer), `BacktestEngine`, and 20 unit tests implemented and committed.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
@@ -20,14 +20,15 @@
 - [x] **Phase 0**: Knowledge Base & Environment Setup
 - [x] **Phase 1**: Data Ingestion Layer (`src/data/`, `YahooFinanceProvider`, Parquet Caching, `tests/test_data.py`)
 - [x] **Phase 2**: Minimal Strategy Engine (`src/strategies/`, `Signal`, Rule 8 Filter, `SMACrossoverStrategy`, `Quant_Rules.md`)
-- [ ] **Phase 3**: Minimal Backtesting Engine (`src/backtester/`)
+- [x] **Phase 3**: Minimal Backtesting Engine (`src/backtester/`, `Trade`, `calculate_option_price`, `BacktestEngine`, `tests/test_backtester.py`)
 - [ ] **Phase 4**: Risk & Signal Filtering (`src/risk/`, `src/signals/`)
 - [ ] **Phase 5**: Checkpoint & Architecture Review
 
 ## Next Immediate Steps
-1. Begin Phase 3 design for Minimal Backtesting Engine in `src/backtester/`.
-2. Feed historical cached market data to Strategy Engine and calculate performance metrics (Win Rate, Total Trades, P&L).
-3. Write unit tests in `tests/test_backtester.py`.
+1. Begin Phase 4 design for Risk Management Engine (`src/risk/`) and Signal Quality Filtering (`src/signals/`).
+2. Implement position sizing, trailing stop-loss, and confidence scoring explanation generators.
+3. Verify complete offline vertical slice (`Data` → `Strategy` → `Risk` → `Signal Filter` → `Backtest Report`).
+
 
 
 
