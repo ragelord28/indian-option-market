@@ -127,3 +127,46 @@ def test_backtest_engine_option_trade(mock_adr005_df: pd.DataFrame):
     assert trade.entry_price > 0.0
     assert trade.exit_price > 0.0
     assert "strike" in trade.metadata
+
+
+def test_backtest_engine_risk_based_exit():
+    """Test that BacktestEngine exits at profit target or stop loss price."""
+    dates = pd.date_range("2024-01-01", periods=10, freq="D", tz="Asia/Kolkata")
+    # Day 0: entry at 100. Day 1: high = 105 (triggers 104 target price).
+    df = pd.DataFrame(
+        {
+            "symbol": ["TCS"] * 10,
+            "open": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0, 109.0],
+            "high": [101.0, 105.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0, 109.0, 110.0],
+            "low": [99.0, 100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0],
+            "close": [100.0, 102.0, 102.5, 103.5, 104.5, 105.5, 106.5, 107.5, 108.5, 109.5],
+            "adj_close": [100.0, 102.0, 102.5, 103.5, 104.5, 105.5, 106.5, 107.5, 108.5, 109.5],
+            "volume": [1000] * 10,
+            "open_interest": [np.nan] * 10,
+        },
+        index=dates,
+    )
+    df.index.name = "timestamp"
+
+    class MockStrategy(BaseStrategy):
+        def generate_signals(self, df_in):
+            return [
+                Signal(
+                    symbol="TCS",
+                    timestamp=df_in.index[0],
+                    action="BUY",
+                    strategy_name="Mock",
+                    confidence=0.80,
+                    entry_price=100.0,
+                    stop_loss=98.0,
+                    target_price=104.0,
+                )
+            ]
+
+    engine = BacktestEngine(strategy=MockStrategy())
+    res = engine.run(df)
+    trade = res["trades"][0]
+
+    # Target 104 was hit on Day 1 (high = 105)
+    assert trade.exit_price == 104.0
+    assert trade.pnl > 0
