@@ -2,7 +2,7 @@
 
 ## Current Overview
 - **Active Phase**: Phase 9.5 Red Team Remediation & Honest Cost-Adjusted Benchmark Complete
-- **Status**: Phases 1–9.5 Complete. Implemented Red Team remediation fixes for option risk-based sizing, pessimistic stop-first exit evaluation, option exit re-pricing at trigger price, SELL PnL alignment, and ₹50 transaction fees. Re-ran 3-year historical benchmark across full F&O universe. `CompositeHolyGrailStrategy` generated **₹8,921,480.95** net PnL. All 33 unit tests passing.
+- **Status**: Phases 1–9.5 Complete. Implemented Red Team remediation fixes for option risk-based sizing, pessimistic stop-first exit evaluation, option exit re-pricing at trigger price, SELL PnL alignment, and ₹50 transaction fees. Re-ran 3-year historical benchmark across full F&O universe. `CompositeHolyGrailStrategy` generated **₹17,004,209.49** net PnL across 37,783 trades. All 33 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
