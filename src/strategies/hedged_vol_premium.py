@@ -67,9 +67,10 @@ class HedgedVolPremiumStrategy(BaseStrategy):
         data["log_ret"] = np.log(data["close"] / data["close"].shift(1))
         data["hv_20"] = data["log_ret"].rolling(window=self.hv_period).std() * np.sqrt(252)
 
-        # 2. HV Percentile rank over trailing 100 days
-        hv_min = data["hv_20"].rolling(window=self.lookback_window).min()
-        hv_max = data["hv_20"].rolling(window=self.lookback_window).max()
+        # 2. HV Percentile rank over trailing 100 days (shifted by 1 to prevent self-anchoring)
+        hv_shifted = data["hv_20"].shift(1)
+        hv_min = hv_shifted.rolling(window=self.lookback_window).min()
+        hv_max = hv_shifted.rolling(window=self.lookback_window).max()
         hv_denom = hv_max - hv_min
 
         data["hv_percentile"] = np.where(

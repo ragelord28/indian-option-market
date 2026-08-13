@@ -118,7 +118,7 @@ class CompositeHolyGrailStrategy(BaseStrategy):
 
             # Check factor conditions
             vwap_5m_reversion = vwap_dist < -0.005  # Price below VWAP by > 0.5%
-            rsi_15m_divergence = rsi_val < 40.0 or rsi_val > 60.0
+            rsi_extreme = rsi_val < 40.0 or rsi_val > 60.0
             daily_adx_gt_20 = adx_val > 20.0
             vol_15m_surge = (vol_sma > 0) and (vol > 1.5 * vol_sma)
 
@@ -129,13 +129,13 @@ class CompositeHolyGrailStrategy(BaseStrategy):
                 oi_curr = float(data["open_interest"].iloc[i])
                 oi_surge = (oi_curr > 1.03 * oi_start) if (oi_start > 0 and not pd.isna(oi_start) and not pd.isna(oi_curr)) else False
             else:
-                oi_surge = bool(df.attrs.get("oi_surge", True))
+                oi_surge = bool(df.attrs.get("oi_surge", False))
 
             # Trigger BUY signal when VWAP mean-reversion is indicated
             if vwap_5m_reversion:
                 composite_factors = {
                     "daily_adx_gt_20": bool(daily_adx_gt_20),
-                    "rsi_15m_divergence": bool(rsi_15m_divergence),
+                    "rsi_extreme": bool(rsi_extreme),
                     "vwap_5m_reversion": bool(vwap_5m_reversion),
                     "vol_15m_surge": bool(vol_15m_surge),
                     "oi_surge": bool(oi_surge),

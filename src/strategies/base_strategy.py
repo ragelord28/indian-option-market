@@ -80,7 +80,7 @@ class BaseStrategy(ABC):
             factors = signal.metadata["composite_factors"]
             if factors.get("daily_adx_gt_20"):
                 base_score += 0.10
-            if factors.get("rsi_15m_divergence"):
+            if factors.get("rsi_extreme") or factors.get("rsi_15m_divergence"):
                 base_score += 0.15
             if factors.get("vwap_5m_reversion"):
                 base_score += 0.15

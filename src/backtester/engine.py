@@ -15,6 +15,14 @@ from src.backtester.synthetic_options import calculate_option_price
 from src.risk.risk_manager import RiskManager
 
 
+def _get_sigma(row: pd.Series) -> float:
+    """Extract hv_20 volatility or fallback to default 0.20."""
+    val = row.get("hv_20") if "hv_20" in row.index else None
+    if val is None or pd.isna(val) or val <= 0:
+        return 0.20
+    return float(val)
+
+
 class BacktestEngine:
     """
     Simulates strategy execution against historical market data DataFrames with risk management.
@@ -73,9 +81,10 @@ class BacktestEngine:
                 "trades": [],
             }
 
-        # 1. Use provided signals or generate signals via Strategy Engine
+        # 1. Use provided signals or generate & filter signals via Strategy Engine
         if signals is None:
-            signals = self.strategy.generate_signals(df)
+            raw_signals = self.strategy.generate_signals(df)
+            signals = [s for s in raw_signals if self.strategy.filter_signal_rule_8(s)]
 
         trades: List[Trade] = []
         timestamps = list(df.index)
@@ -104,60 +113,97 @@ class BacktestEngine:
                 stop_loss = float(signal.stop_loss)
                 target_price = float(signal.target_price)
 
-            # Calculate position size using RiskManager
-            quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss)
-
-            # Fix 2: If quantity is 0 (risk or capital limit breached), skip the trade
-            if quantity == 0:
-                continue
+            # 1. Directional Mapping: is_bullish = target_price > entry_spot
+            is_bullish = target_price > entry_spot
 
             # Check if signal specifies an option trade
             if signal.metadata.get("type") == "OPTION":
                 strike = entry_spot
-                # Fix 1: Extract option_type ('c' or 'p') and align for entry and exit
                 opt_type = signal.metadata.get("option_type", "c")
+                entry_sigma = _get_sigma(entry_row)
 
-                entry_premium = calculate_option_price(opt_type, entry_spot, strike, 30.0)
+                # 2. Option Sizing based on option premium risk
+                entry_premium = calculate_option_price(
+                    opt_type, S=entry_spot, K=strike, days_to_expiry=30.0, sigma=entry_sigma
+                )
+                stop_premium = calculate_option_price(
+                    opt_type, S=stop_loss, K=strike, days_to_expiry=30.0, sigma=entry_sigma
+                )
+
+                quantity = self.risk_manager.calculate_position_size(
+                    entry_price=entry_premium, stop_loss=stop_premium
+                )
+
+                if quantity == 0:
+                    continue
+
                 trade_type = "OPTION"
-
-                # Simulate exit for option trade
-                exit_price = round(entry_premium, 2)
                 exit_time = entry_time
+                trigger_price = entry_spot
+                exit_bar_idx = entry_idx
 
+                # 3. Pessimistic Exits
                 for i in range(entry_idx + 1, len(df)):
                     bar = df.iloc[i]
-                    bar_spot = float(bar["close"])
+                    low = float(bar["low"])
+                    high = float(bar["high"])
 
-                    # If target or stop hit on underlying, exit option trade
-                    if action == "BUY":
-                        if bar["high"] >= target_price or bar["low"] <= stop_loss:
-                            dte = max(30.0 - (i - entry_idx), 1.0)
-                            exit_premium = calculate_option_price(opt_type, bar_spot, strike, dte)
-                            exit_price = round(exit_premium, 2)
+                    if is_bullish:
+                        if low <= stop_loss:
+                            trigger_price = stop_loss
                             exit_time = bar.name
+                            exit_bar_idx = i
                             break
-                    elif action == "SELL":
-                        if bar["low"] <= target_price or bar["high"] >= stop_loss:
-                            dte = max(30.0 - (i - entry_idx), 1.0)
-                            exit_premium = calculate_option_price(opt_type, bar_spot, strike, dte)
-                            exit_price = round(exit_premium, 2)
+                        elif high >= target_price:
+                            trigger_price = target_price
                             exit_time = bar.name
+                            exit_bar_idx = i
+                            break
+                    else:
+                        if high >= stop_loss:
+                            trigger_price = stop_loss
+                            exit_time = bar.name
+                            exit_bar_idx = i
+                            break
+                        elif low <= target_price:
+                            trigger_price = target_price
+                            exit_time = bar.name
+                            exit_bar_idx = i
                             break
                 else:
                     # Final bar fallback
                     final_bar = df.iloc[-1]
-                    final_spot = float(final_bar["close"])
-                    dte = max(30.0 - (len(df) - 1 - entry_idx), 1.0)
-                    exit_premium = calculate_option_price(opt_type, final_spot, strike, dte)
-                    exit_price = round(exit_premium, 2)
+                    trigger_price = float(final_bar["close"])
                     exit_time = final_bar.name
+                    exit_bar_idx = len(df) - 1
 
-                pnl = round((exit_price - entry_premium) * quantity, 2)
-                pnl_percent = (
-                    round(((exit_price - entry_premium) / entry_premium) * 100.0, 2)
-                    if entry_premium > 0
-                    else 0.0
+                # 4. Accurate Option Exit Pricing using trigger_price & actual bar sigma
+                exit_bar = df.iloc[exit_bar_idx]
+                exit_sigma = _get_sigma(exit_bar)
+                dte = max(30.0 - (exit_bar_idx - entry_idx), 1.0)
+                exit_premium = calculate_option_price(
+                    opt_type, S=trigger_price, K=strike, days_to_expiry=dte, sigma=exit_sigma
                 )
+                exit_price = round(exit_premium, 2)
+
+                # 5. Fix Option SELL PnL & 6. Transaction Costs (-₹50)
+                if action == "SELL":
+                    raw_pnl = (entry_premium - exit_premium) * quantity
+                    pnl_pct = (
+                        ((entry_premium - exit_premium) / entry_premium) * 100.0
+                        if entry_premium > 0
+                        else 0.0
+                    )
+                else:
+                    raw_pnl = (exit_premium - entry_premium) * quantity
+                    pnl_pct = (
+                        ((exit_premium - entry_premium) / entry_premium) * 100.0
+                        if entry_premium > 0
+                        else 0.0
+                    )
+
+                pnl = round(raw_pnl - 50.0, 2)
+                pnl_percent = round(pnl_pct, 2)
 
                 trade = Trade(
                     symbol=signal.symbol,
@@ -178,46 +224,57 @@ class BacktestEngine:
                     },
                 )
             else:
-                # Standard Stock Trade with Risk-Based Exit Simulation
-                exit_price = float(df.iloc[-1]["close"])
-                exit_time = df.iloc[-1].name
+                # Standard Stock Trade
+                quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss)
+                if quantity == 0:
+                    continue
 
+                exit_time = df.iloc[-1].name
+                trigger_price = float(df.iloc[-1]["close"])
+
+                # 3. Pessimistic Exits
                 for i in range(entry_idx + 1, len(df)):
                     bar = df.iloc[i]
-                    high = float(bar["high"])
                     low = float(bar["low"])
+                    high = float(bar["high"])
 
-                    if action == "BUY":
-                        # Check Stop Loss first for conservatism
+                    if is_bullish:
                         if low <= stop_loss:
-                            exit_price = stop_loss
+                            trigger_price = stop_loss
                             exit_time = bar.name
                             break
                         elif high >= target_price:
-                            exit_price = target_price
+                            trigger_price = target_price
                             exit_time = bar.name
                             break
-                    elif action == "SELL":
+                    else:
                         if high >= stop_loss:
-                            exit_price = stop_loss
+                            trigger_price = stop_loss
                             exit_time = bar.name
                             break
                         elif low <= target_price:
-                            exit_price = target_price
+                            trigger_price = target_price
                             exit_time = bar.name
                             break
 
-                pnl = round(
-                    (exit_price - entry_price) * quantity
-                    if action == "BUY"
-                    else (entry_price - exit_price) * quantity,
-                    2,
-                )
-                pnl_percent = (
-                    round(((exit_price - entry_price) / entry_price) * 100.0, 2)
-                    if entry_price > 0
-                    else 0.0
-                )
+                exit_price = trigger_price
+                if action == "SELL":
+                    raw_pnl = (entry_price - exit_price) * quantity
+                    pnl_pct = (
+                        ((entry_price - exit_price) / entry_price) * 100.0
+                        if entry_price > 0
+                        else 0.0
+                    )
+                else:
+                    raw_pnl = (exit_price - entry_price) * quantity
+                    pnl_pct = (
+                        ((exit_price - entry_price) / entry_price) * 100.0
+                        if entry_price > 0
+                        else 0.0
+                    )
+
+                pnl = round(raw_pnl - 50.0, 2)
+                pnl_percent = round(pnl_pct, 2)
 
                 trade = Trade(
                     symbol=signal.symbol,

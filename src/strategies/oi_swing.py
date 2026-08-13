@@ -82,10 +82,10 @@ class OISwingStrategy(BaseStrategy):
             if has_oi_col:
                 oi_start = float(data["open_interest"].iloc[i - 3])
                 oi_curr = float(data["open_interest"].iloc[i - 1])
-                oi_buildup = ((oi_curr - oi_start) / oi_start) if (oi_start > 0 and not pd.isna(oi_start) and not pd.isna(oi_curr)) else self.min_oi_buildup_pct
+                oi_buildup = ((oi_curr - oi_start) / oi_start) if (oi_start > 0 and not pd.isna(oi_start) and not pd.isna(oi_curr)) else 0.0
             else:
-                # If Open Interest column is NaN (e.g. Yahoo Finance), check DataFrame metadata or default to threshold
-                oi_buildup = float(df.attrs.get("oi_buildup_pct", self.min_oi_buildup_pct))
+                # If Open Interest column is NaN (e.g. Yahoo Finance), check DataFrame metadata or default to 0.0
+                oi_buildup = float(df.attrs.get("oi_buildup_pct", 0.0))
 
             if oi_buildup < self.min_oi_buildup_pct:
                 continue

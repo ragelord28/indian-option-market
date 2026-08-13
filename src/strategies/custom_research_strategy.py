@@ -78,13 +78,13 @@ class RelativeStrengthVWAPReversionStrategy(BaseStrategy):
         data = df.copy()
         symbol = str(data["symbol"].iloc[0])
 
-        # 1. Calculate Typical Price and Volume Weighted Average Price (VWAP)
+        # 1. Calculate Typical Price and Volume Weighted Average Price (VWAP) via 75-period rolling window
         data["tp"] = (data["high"] + data["low"] + data["close"]) / 3.0
         data["tp_vol"] = data["tp"] * data["volume"]
 
-        cum_tp_vol = data["tp_vol"].cumsum()
-        cum_vol = data["volume"].cumsum()
-        data["vwap"] = np.where(cum_vol > 0, cum_tp_vol / cum_vol, data["close"])
+        roll_tp_vol = data["tp_vol"].rolling(window=75, min_periods=1).sum()
+        roll_vol = data["volume"].rolling(window=75, min_periods=1).sum()
+        data["vwap"] = np.where(roll_vol > 0, roll_tp_vol / roll_vol, data["close"])
 
         # 2. Percentage distance from VWAP: (close - vwap) / vwap
         data["vwap_dist"] = (data["close"] - data["vwap"]) / data["vwap"]
@@ -93,7 +93,6 @@ class RelativeStrengthVWAPReversionStrategy(BaseStrategy):
         data["rsi"] = self._calculate_rsi(data["close"], self.rsi_period)
 
         # 4. Check Nifty 50 Macro Trend Filter
-        # Reads from df.attrs or column 'nifty_above_20sma' if available; defaults to True for call, False for put
         has_nifty_col = "nifty_above_20sma" in data.columns
 
         signals: List[Signal] = []
@@ -111,7 +110,7 @@ class RelativeStrengthVWAPReversionStrategy(BaseStrategy):
             nifty_above_20sma_bull = (
                 bool(row["nifty_above_20sma"])
                 if has_nifty_col
-                else bool(df.attrs.get("nifty_above_20sma", True))
+                else bool(df.attrs.get("nifty_above_20sma", False))
             )
             nifty_above_20sma_bear = (
                 bool(row["nifty_above_20sma"])

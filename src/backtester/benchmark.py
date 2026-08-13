@@ -18,7 +18,8 @@ from src.backtester.engine import BacktestEngine
 
 def calculate_max_drawdown(trades: list, initial_capital: float = 100000.0) -> float:
     """
-    Calculate Maximum Drawdown (in ₹) from a list of executed Trade objects.
+    Calculate Maximum Drawdown (in ₹) from a list of executed Trade objects,
+    sorting trades chronologically by exit time first.
 
     Args:
         trades: List of Trade objects returned by BacktestEngine.
@@ -30,11 +31,14 @@ def calculate_max_drawdown(trades: list, initial_capital: float = 100000.0) -> f
     if not trades:
         return 0.0
 
+    # Sort trades chronologically by exit_time
+    sorted_trades = sorted(trades, key=lambda t: t.exit_time)
+
     equity = initial_capital
     peak = initial_capital
     max_dd = 0.0
 
-    for trade in trades:
+    for trade in sorted_trades:
         equity += trade.pnl
         if equity > peak:
             peak = equity
@@ -47,7 +51,7 @@ def calculate_max_drawdown(trades: list, initial_capital: float = 100000.0) -> f
 
 def run_benchmark(df: pd.DataFrame, initial_capital: float = 100000.0) -> Dict[str, Any]:
     """
-    Run side-by-side performance benchmark for all 4 strategy modules.
+    Run side-by-side performance benchmark for strategy modules.
 
     Args:
         df: Standardized ADR-005 market data DataFrame.
@@ -58,13 +62,12 @@ def run_benchmark(df: pd.DataFrame, initial_capital: float = 100000.0) -> Dict[s
     """
     strategies = [
         ORBMomentumStrategy(),
-        HedgedVolPremiumStrategy(percentile_threshold=50.0),  # Adjust threshold for benchmark mock data
+        HedgedVolPremiumStrategy(percentile_threshold=50.0),
         OISwingStrategy(),
         RelativeStrengthVWAPReversionStrategy(vwap_dist_threshold=0.005),
     ]
 
     results = {}
-    rows = []
 
     print("\n" + "=" * 85)
     print(f"{'STRATEGY BENCHMARK & COMPARISON MATRIX':^85}")
@@ -75,7 +78,10 @@ def run_benchmark(df: pd.DataFrame, initial_capital: float = 100000.0) -> Dict[s
 
     for strat in strategies:
         engine = BacktestEngine(strategy=strat, initial_capital=initial_capital)
-        res = engine.run(df)
+        raw_signals = strat.generate_signals(df)
+        valid_signals = [s for s in raw_signals if strat.filter_signal_rule_8(s)]
+
+        res = engine.run(df, signals=valid_signals)
 
         metrics = res["metrics"]
         trades = res["trades"]
@@ -104,7 +110,6 @@ def run_benchmark(df: pd.DataFrame, initial_capital: float = 100000.0) -> Dict[s
 
 
 if __name__ == "__main__":
-    # Script entry point for standalone execution
     import numpy as np
 
     dates = pd.date_range(start="2024-01-01", periods=150, freq="D", tz="Asia/Kolkata")

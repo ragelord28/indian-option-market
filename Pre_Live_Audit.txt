@@ -1,0 +1,1576 @@
+================================================================================
+FILE PATH: src/strategies/__init__.py
+================================================================================
+"""
+Strategy Engine Module for the Indian Option Market platform.
+
+Provides BaseStrategy interface, Signal data structure, Rule 8 quality filtering,
+and Phase 6 / Phase 8.5 concrete trading strategy implementations.
+"""
+
+from src.strategies.base_strategy import Signal, BaseStrategy
+from src.strategies.orb_momentum import ORBMomentumStrategy
+from src.strategies.hedged_vol_premium import HedgedVolPremiumStrategy
+from src.strategies.oi_swing import OISwingStrategy
+from src.strategies.custom_research_strategy import RelativeStrengthVWAPReversionStrategy
+from src.strategies.composite_holy_grail import CompositeHolyGrailStrategy
+
+__all__ = [
+    "Signal",
+    "BaseStrategy",
+    "ORBMomentumStrategy",
+    "HedgedVolPremiumStrategy",
+    "OISwingStrategy",
+    "RelativeStrengthVWAPReversionStrategy",
+    "CompositeHolyGrailStrategy",
+]
+
+================================================================================
+FILE PATH: src/strategies/base_strategy.py
+================================================================================
+"""
+Base Strategy Interface and Signal Data Structure.
+
+Defines:
+1. Signal: Dataclass representing a generated trade setup.
+2. BaseStrategy: Abstract base class for all trading strategies with Rule 8 signal filtering.
+"""
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+import pandas as pd
+
+
+@dataclass
+class Signal:
+    """
+    Standard trade signal emitted by strategy modules.
+
+    Attributes:
+        symbol: Standardized internal stock/index symbol (e.g. 'RELIANCE').
+        timestamp: Signal generation timestamp (datetime or pd.Timestamp).
+        action: Trade direction ('BUY' or 'SELL').
+        strategy_name: Identifier of the strategy generating the signal.
+        confidence: Signal confidence score (0.0 to 1.0).
+        entry_price: Trigger price at signal generation.
+        target_price: Optional profit target price.
+        stop_loss: Optional stop-loss price.
+        metadata: Optional dictionary for Greeks, IV, indicators, and additional context.
+    """
+
+    symbol: str
+    timestamp: Any
+    action: str
+    strategy_name: str
+    confidence: float
+    entry_price: float
+    target_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class BaseStrategy(ABC):
+    """
+    Abstract Base Class for all Strategy Engine modules.
+
+    All strategy implementations must inherit from this class and implement `generate_signals`.
+    """
+
+    def __init__(self, name: str = "BaseStrategy"):
+        """Initialize base strategy with a name."""
+        self.name = name
+
+    def filter_signal_rule_8(self, signal: Signal) -> bool:
+        """
+        Baseline Rule 8 Quality Filter (per Core.md Rule 8 & Quant_Rules.md).
+
+        Evaluates signal confidence. If composite_factors dictionary is present in
+        signal.metadata, dynamically aggregates multi-factor confidence weights:
+        - Base Score: 0.50
+        - daily_adx_gt_20: +0.10
+        - rsi_15m_divergence: +0.15
+        - vwap_5m_reversion: +0.15
+        - vol_15m_surge: +0.10
+        - oi_surge: +0.10
+        Capped at 0.99 max confidence. Rejects signals with final confidence < 0.60.
+
+        Args:
+            signal: The candidate Signal instance to evaluate.
+
+        Returns:
+            True if signal passes Rule 8 quality filtering (confidence >= 0.60), False if suppressed.
+        """
+        if signal is None:
+            return False
+
+        if signal.metadata and "composite_factors" in signal.metadata:
+            base_score = 0.50
+            factors = signal.metadata["composite_factors"]
+            if factors.get("daily_adx_gt_20"):
+                base_score += 0.10
+            if factors.get("rsi_15m_divergence"):
+                base_score += 0.15
+            if factors.get("vwap_5m_reversion"):
+                base_score += 0.15
+            if factors.get("vol_15m_surge"):
+                base_score += 0.10
+            if factors.get("oi_surge"):
+                base_score += 0.10
+            signal.confidence = min(base_score, 0.99)
+
+        return signal.confidence >= 0.60
+
+    @abstractmethod
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        """
+        Generate trade signals from an ADR-005 compliant market data DataFrame.
+
+        Args:
+            df: Standardized market data DataFrame.
+
+        Returns:
+            List of validated Signal objects that passed Rule 8 quality filtering.
+        """
+        pass
+
+================================================================================
+FILE PATH: src/strategies/composite_holy_grail.py
+================================================================================
+"""
+Composite "Holy Grail" Strategy with Multi-Timeframe Multi-Factor Confidence Scoring.
+
+Strategy Logic:
+- Simulates institutional multi-timeframe matrix (Daily ADX, 15m RSI, 5m VWAP, 15m Volume Surge, OI Surge).
+- Triggers BUY setups on VWAP mean-reversion.
+- Populates `metadata["composite_factors"]` for dynamic Rule 8 multi-factor confidence scoring:
+  - Base Score: 0.50
+  - daily_adx_gt_20: +0.10
+  - rsi_15m_divergence: +0.15
+  - vwap_5m_reversion: +0.15
+  - vol_15m_surge: +0.10
+  - oi_surge: +0.10
+"""
+
+from typing import List
+import numpy as np
+import pandas as pd
+
+from src.strategies.base_strategy import BaseStrategy, Signal
+
+
+class CompositeHolyGrailStrategy(BaseStrategy):
+    """
+    Composite Multi-Timeframe "Holy Grail" Options Strategy.
+
+    Evaluates technical indicators across timeframes (ADX, RSI, VWAP, Volume, OI)
+    and attaches composite_factors to signals for dynamic Rule 8 confidence aggregation.
+    """
+
+    def __init__(
+        self,
+        rsi_period: int = 14,
+        vol_period: int = 20,
+        name: str = "CompositeHolyGrailStrategy",
+    ):
+        """
+        Initialize CompositeHolyGrailStrategy.
+
+        Args:
+            rsi_period: Lookback window for RSI calculation (default 14).
+            vol_period: Lookback window for volume moving average (default 20).
+            name: Strategy identifier name.
+        """
+        super().__init__(name=name)
+        self.rsi_period = rsi_period
+        self.vol_period = vol_period
+
+    def _calculate_rsi(self, series: pd.Series, period: int) -> pd.Series:
+        """Calculate 14-period Relative Strength Index (RSI)."""
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+
+        avg_gain = gain.rolling(window=period, min_periods=period).mean()
+        avg_loss = loss.rolling(window=period, min_periods=period).mean()
+
+        rs = avg_gain / (avg_loss + 1e-9)
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+        return rsi
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        """
+        Generate multi-factor Composite signals from standard market data DataFrame.
+
+        Args:
+            df: Standardized ADR-005 market data DataFrame.
+
+        Returns:
+            List of generated Signal objects with composite_factors metadata.
+        """
+        min_required = max(self.rsi_period + 5, self.vol_period)
+        if df is None or df.empty or len(df) < min_required:
+            return []
+
+        data = df.copy()
+        symbol = str(data["symbol"].iloc[0])
+
+        # 1. 14-period RSI
+        data["rsi"] = self._calculate_rsi(data["close"], self.rsi_period)
+
+        # 2. VWAP & distance
+        data["tp"] = (data["high"] + data["low"] + data["close"]) / 3.0
+        data["tp_vol"] = data["tp"] * data["volume"]
+        cum_tp_vol = data["tp_vol"].cumsum()
+        cum_vol = data["volume"].cumsum()
+        data["vwap"] = np.where(cum_vol > 0, cum_tp_vol / cum_vol, data["close"])
+        data["vwap_dist"] = (data["close"] - data["vwap"]) / data["vwap"]
+
+        # 3. Volume SMA & Surge
+        data["vol_sma"] = data["volume"].rolling(window=self.vol_period).mean()
+
+        # 4. ADX / Trend Strength Proxy over 14 bars
+        data["high_low_diff"] = data["high"] - data["low"]
+        data["price_change_14"] = (data["close"] - data["close"].shift(14)).abs()
+        data["range_sum_14"] = data["high_low_diff"].rolling(14).sum()
+        data["adx_proxy"] = np.where(
+            data["range_sum_14"] > 0,
+            (data["price_change_14"] / data["range_sum_14"]) * 100.0,
+            25.0,
+        )
+
+        signals: List[Signal] = []
+
+        for i in range(min_required, len(data)):
+            row = data.iloc[i]
+
+            close_p = float(row["close"])
+            vwap_p = float(row["vwap"])
+            vwap_dist = float(row["vwap_dist"])
+            rsi_val = float(row["rsi"])
+            vol = float(row["volume"])
+            vol_sma = float(row["vol_sma"])
+            adx_val = float(row["adx_proxy"])
+
+            if pd.isna(vwap_dist) or pd.isna(rsi_val):
+                continue
+
+            # Check factor conditions
+            vwap_5m_reversion = vwap_dist < -0.005  # Price below VWAP by > 0.5%
+            rsi_15m_divergence = rsi_val < 40.0 or rsi_val > 60.0
+            daily_adx_gt_20 = adx_val > 20.0
+            vol_15m_surge = (vol_sma > 0) and (vol > 1.5 * vol_sma)
+
+            # Open Interest surge check
+            has_oi = "open_interest" in data.columns and not data["open_interest"].isna().all()
+            if has_oi and i >= 3:
+                oi_start = float(data["open_interest"].iloc[i - 3])
+                oi_curr = float(data["open_interest"].iloc[i])
+                oi_surge = (oi_curr > 1.03 * oi_start) if (oi_start > 0 and not pd.isna(oi_start) and not pd.isna(oi_curr)) else False
+            else:
+                oi_surge = bool(df.attrs.get("oi_surge", True))
+
+            # Trigger BUY signal when VWAP mean-reversion is indicated
+            if vwap_5m_reversion:
+                composite_factors = {
+                    "daily_adx_gt_20": bool(daily_adx_gt_20),
+                    "rsi_15m_divergence": bool(rsi_15m_divergence),
+                    "vwap_5m_reversion": bool(vwap_5m_reversion),
+                    "vol_15m_surge": bool(vol_15m_surge),
+                    "oi_surge": bool(oi_surge),
+                }
+
+                target_p = round(vwap_p, 2) if vwap_p > close_p else round(close_p * 1.03, 2)
+                stop_p = round(close_p * 0.98, 2)
+
+                signal = Signal(
+                    symbol=symbol,
+                    timestamp=row.name,
+                    action="BUY",
+                    strategy_name=self.name,
+                    confidence=0.50,  # Base confidence, dynamically updated by filter_signal_rule_8
+                    entry_price=close_p,
+                    target_price=target_p,
+                    stop_loss=stop_p,
+                    metadata={
+                        "type": "OPTION",
+                        "option_type": "c",
+                        "delta_target": 0.50,
+                        "composite_factors": composite_factors,
+                    },
+                )
+                signals.append(signal)
+
+        return signals
+
+================================================================================
+FILE PATH: src/strategies/custom_research_strategy.py
+================================================================================
+"""
+Relative Strength & VWAP Mean Reversion Strategy (Indian FnO Edge).
+
+Research Edge & Citation:
+Based on quantitative research from QuantInsti and Zerodha Varsity institutional trading studies:
+- Institutional execution algorithms (FII/DII) benchmark heavily against Volume Weighted Average Price (VWAP).
+- When a liquid FnO stock stretches > 1.5% away from VWAP concurrently with extreme RSI levels
+  (RSI < 35 oversold or RSI > 65 overbought), price mean-reverts sharply back toward VWAP.
+- Nifty 50 Macro Trend Filter: Only generates BUY Call signals when Nifty 50 is above its 20-day SMA,
+  and BUY Put signals when Nifty 50 is below its 20-day SMA.
+"""
+
+from typing import List
+import numpy as np
+import pandas as pd
+
+from src.strategies.base_strategy import BaseStrategy, Signal
+
+
+class RelativeStrengthVWAPReversionStrategy(BaseStrategy):
+    """
+    Relative Strength & VWAP Mean Reversion Strategy.
+
+    Combines VWAP distance tracking with 14-period RSI and Nifty 50 macro trend filter.
+    """
+
+    def __init__(
+        self,
+        rsi_period: int = 14,
+        vwap_dist_threshold: float = 0.015,  # 1.5% distance from VWAP
+        rsi_oversold: float = 35.0,
+        rsi_overbought: float = 65.0,
+        name: str = "RelativeStrengthVWAPReversionStrategy",
+    ):
+        """
+        Initialize the RelativeStrengthVWAPReversionStrategy parameters.
+
+        Args:
+            rsi_period: Lookback window for RSI calculation (default 14).
+            vwap_dist_threshold: Minimum percentage distance from VWAP to trigger reversion (default 0.015 = 1.5%).
+            rsi_oversold: RSI threshold for oversold long call entry (default 35.0).
+            rsi_overbought: RSI threshold for overbought long put entry (default 65.0).
+            name: Strategy identifier name.
+        """
+        super().__init__(name=name)
+        self.rsi_period = rsi_period
+        self.vwap_dist_threshold = vwap_dist_threshold
+        self.rsi_oversold = rsi_oversold
+        self.rsi_overbought = rsi_overbought
+
+    def _calculate_rsi(self, series: pd.Series, period: int) -> pd.Series:
+        """Calculate 14-period Relative Strength Index (RSI)."""
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+
+        avg_gain = gain.rolling(window=period, min_periods=period).mean()
+        avg_loss = loss.rolling(window=period, min_periods=period).mean()
+
+        rs = avg_gain / (avg_loss + 1e-9)
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+        return rsi
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        """
+        Generate VWAP + RSI mean-reversion signals with Nifty 50 macro trend filter.
+
+        Args:
+            df: Standardized ADR-005 market data DataFrame.
+
+        Returns:
+            List of generated Signal objects.
+        """
+        min_required = max(self.rsi_period + 5, 20)
+        if df is None or df.empty or len(df) < min_required:
+            return []
+
+        data = df.copy()
+        symbol = str(data["symbol"].iloc[0])
+
+        # 1. Calculate Typical Price and Volume Weighted Average Price (VWAP)
+        data["tp"] = (data["high"] + data["low"] + data["close"]) / 3.0
+        data["tp_vol"] = data["tp"] * data["volume"]
+
+        cum_tp_vol = data["tp_vol"].cumsum()
+        cum_vol = data["volume"].cumsum()
+        data["vwap"] = np.where(cum_vol > 0, cum_tp_vol / cum_vol, data["close"])
+
+        # 2. Percentage distance from VWAP: (close - vwap) / vwap
+        data["vwap_dist"] = (data["close"] - data["vwap"]) / data["vwap"]
+
+        # 3. Calculate RSI
+        data["rsi"] = self._calculate_rsi(data["close"], self.rsi_period)
+
+        # 4. Check Nifty 50 Macro Trend Filter
+        # Reads from df.attrs or column 'nifty_above_20sma' if available; defaults to True for call, False for put
+        has_nifty_col = "nifty_above_20sma" in data.columns
+
+        signals: List[Signal] = []
+
+        for i in range(min_required, len(data)):
+            row = data.iloc[i]
+            vwap_dist = float(row["vwap_dist"])
+            rsi_val = float(row["rsi"])
+            price = float(row["close"])
+            vwap_p = float(row["vwap"])
+
+            if pd.isna(vwap_dist) or pd.isna(rsi_val):
+                continue
+
+            nifty_above_20sma_bull = (
+                bool(row["nifty_above_20sma"])
+                if has_nifty_col
+                else bool(df.attrs.get("nifty_above_20sma", True))
+            )
+            nifty_above_20sma_bear = (
+                bool(row["nifty_above_20sma"])
+                if has_nifty_col
+                else bool(df.attrs.get("nifty_above_20sma", False))
+            )
+
+            # Bullish Mean Reversion: Spot < VWAP (-1.5%), RSI < 35, and Nifty 50 above 20 SMA
+            if (
+                vwap_dist < -self.vwap_dist_threshold
+                and rsi_val < self.rsi_oversold
+                and nifty_above_20sma_bull is True
+            ):
+                target_p = round(vwap_p, 2)  # Revert back to VWAP
+                stop_p = round(price * 0.985, 2)
+
+                signal = Signal(
+                    symbol=symbol,
+                    timestamp=row.name,
+                    action="BUY",
+                    strategy_name=self.name,
+                    confidence=0.82,
+                    entry_price=price,
+                    target_price=target_p,
+                    stop_loss=stop_p,
+                    metadata={
+                        "type": "OPTION",
+                        "option_type": "c",
+                        "delta_target": 0.50,
+                        "strategy": "vwap_rsi_reversion",
+                        "rsi": round(rsi_val, 2),
+                        "vwap_dist_pct": round(vwap_dist * 100, 2),
+                        "vwap": round(vwap_p, 2),
+                        "nifty_above_20sma": True,
+                    },
+                )
+                signals.append(signal)
+
+            # Bearish Mean Reversion: Spot > VWAP (+1.5%), RSI > 65, and Nifty 50 below 20 SMA
+            elif (
+                vwap_dist > self.vwap_dist_threshold
+                and rsi_val > self.rsi_overbought
+                and nifty_above_20sma_bear is False
+            ):
+                target_p = round(vwap_p, 2)
+                stop_p = round(price * 1.015, 2)
+
+                signal = Signal(
+                    symbol=symbol,
+                    timestamp=row.name,
+                    action="BUY",
+                    strategy_name=self.name,
+                    confidence=0.82,
+                    entry_price=price,
+                    target_price=target_p,
+                    stop_loss=stop_p,
+                    metadata={
+                        "type": "OPTION",
+                        "option_type": "p",
+                        "delta_target": 0.50,
+                        "strategy": "vwap_rsi_reversion",
+                        "rsi": round(rsi_val, 2),
+                        "vwap_dist_pct": round(vwap_dist * 100, 2),
+                        "vwap": round(vwap_p, 2),
+                        "nifty_above_20sma": False,
+                    },
+                )
+                signals.append(signal)
+
+        return signals
+
+================================================================================
+FILE PATH: src/strategies/hedged_vol_premium.py
+================================================================================
+"""
+Tail-Hedged Volatility Premium Strategy.
+
+Strategy Logic:
+- Calculates 20-day annualized Historical Volatility (HV) and HV percentile rank (simulating high IVR > 80th percentile).
+- Trend Filter: Ensures spot price is within 1.0 standard deviation of its 20-day SMA (|price - SMA20| <= 1.0 * STD20) to avoid selling into runaway trending markets.
+- Emits premium-selling SELL signals (Credit Spreads / Iron Condors) with 0.20 Delta target.
+"""
+
+from typing import List
+import numpy as np
+import pandas as pd
+
+from src.strategies.base_strategy import BaseStrategy, Signal
+
+
+class HedgedVolPremiumStrategy(BaseStrategy):
+    """
+    Tail-Hedged Volatility Premium Strategy.
+
+    Identifies elevated volatility regimes (HV percentile > 80th percentile)
+    with non-runaway trend bounds (|price - SMA20| <= 1.0 * STD20) to sell premium safely.
+    """
+
+    def __init__(
+        self,
+        hv_period: int = 20,
+        lookback_window: int = 100,
+        percentile_threshold: float = 80.0,
+        max_std_dev_dist: float = 1.0,
+        name: str = "HedgedVolPremiumStrategy",
+    ):
+        """
+        Initialize the HedgedVolPremiumStrategy parameters.
+
+        Args:
+            hv_period: Period for historical volatility & SMA calculation (default 20 days).
+            lookback_window: Trailing window for HV percentile ranking (default 100 days).
+            percentile_threshold: Minimum percentile threshold to trigger premium sell (default 80.0).
+            max_std_dev_dist: Maximum allowed price distance from 20 SMA in standard deviations (default 1.0).
+            name: Strategy identifier name.
+        """
+        super().__init__(name=name)
+        self.hv_period = hv_period
+        self.lookback_window = lookback_window
+        self.percentile_threshold = percentile_threshold
+        self.max_std_dev_dist = max_std_dev_dist
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        """
+        Generate volatility premium SELL signals from standard market data DataFrame.
+
+        Args:
+            df: Standardized ADR-005 market data DataFrame.
+
+        Returns:
+            List of generated Signal objects.
+        """
+        min_required = self.hv_period + self.lookback_window
+        if df is None or df.empty or len(df) < min_required:
+            return []
+
+        data = df.copy()
+        symbol = str(data["symbol"].iloc[0])
+
+        # 1. Log returns and 20-day annualized Historical Volatility
+        data["log_ret"] = np.log(data["close"] / data["close"].shift(1))
+        data["hv_20"] = data["log_ret"].rolling(window=self.hv_period).std() * np.sqrt(252)
+
+        # 2. HV Percentile rank over trailing 100 days
+        hv_min = data["hv_20"].rolling(window=self.lookback_window).min()
+        hv_max = data["hv_20"].rolling(window=self.lookback_window).max()
+        hv_denom = hv_max - hv_min
+
+        data["hv_percentile"] = np.where(
+            hv_denom > 0, ((data["hv_20"] - hv_min) / hv_denom) * 100.0, 0.0
+        )
+
+        # 3. 20-day SMA and 20-day Standard Deviation for trend bound filter
+        data["sma_20"] = data["close"].rolling(window=self.hv_period).mean()
+        data["std_20"] = data["close"].rolling(window=self.hv_period).std()
+
+        signals: List[Signal] = []
+
+        for i in range(min_required, len(data)):
+            row = data.iloc[i]
+            hv_pct = float(row["hv_percentile"])
+            price = float(row["close"])
+            sma_20 = float(row["sma_20"])
+            std_20 = float(row["std_20"])
+
+            if pd.isna(hv_pct) or pd.isna(sma_20) or pd.isna(std_20) or std_20 <= 0:
+                continue
+
+            # Trend Filter: |price - SMA20| <= 1.0 * STD20
+            within_trend_bounds = abs(price - sma_20) <= (self.max_std_dev_dist * std_20)
+
+            if hv_pct > self.percentile_threshold and within_trend_bounds:
+                target_p = round(price * 0.98, 2)
+                stop_p = round(price * 1.02, 2)
+
+                signal = Signal(
+                    symbol=symbol,
+                    timestamp=row.name,
+                    action="SELL",
+                    strategy_name=self.name,
+                    confidence=0.75,
+                    entry_price=price,
+                    target_price=target_p,
+                    stop_loss=stop_p,
+                    metadata={
+                        "type": "OPTION",
+                        "option_type": "c",
+                        "strategy": "iron_condor_sim",
+                        "delta_target": 0.20,
+                        "hv_20": round(float(row["hv_20"]), 4),
+                        "hv_percentile": round(hv_pct, 2),
+                        "within_trend_bounds": True,
+                    },
+                )
+                signals.append(signal)
+
+        return signals
+
+================================================================================
+FILE PATH: src/strategies/oi_swing.py
+================================================================================
+"""
+Open Interest (OI) Regime Swing Breakout Strategy.
+
+Strategy Logic:
+- Identifies 3 consecutive trading days of range contraction (shrinking high - low range).
+- Checks Open Interest (OI) buildup: Requires cumulative OI expansion >= 5% during the 3-day contraction period.
+- Emits a directional BUY signal when price breaks out above the 3-day max high.
+- Targeted at ATM (0.50 Delta) options directional swing setups.
+"""
+
+from typing import List
+import numpy as np
+import pandas as pd
+
+from src.strategies.base_strategy import BaseStrategy, Signal
+
+
+class OISwingStrategy(BaseStrategy):
+    """
+    OI Regime Swing Breakout Strategy.
+
+    Detects 3-day volatility compression with cumulative OI buildup (>= 5%)
+    followed by price expansion above the 3-day high.
+    """
+
+    def __init__(
+        self,
+        contraction_days: int = 3,
+        min_oi_buildup_pct: float = 0.05,  # 5% cumulative OI expansion requirement
+        name: str = "OISwingStrategy",
+    ):
+        """
+        Initialize the OISwingStrategy parameters.
+
+        Args:
+            contraction_days: Number of consecutive range contraction days required (default 3).
+            min_oi_buildup_pct: Minimum cumulative OI growth required over contraction period (default 0.05 = 5%).
+            name: Strategy identifier name.
+        """
+        super().__init__(name=name)
+        self.contraction_days = contraction_days
+        self.min_oi_buildup_pct = min_oi_buildup_pct
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        """
+        Generate range contraction swing breakout signals from standard market data DataFrame.
+
+        Args:
+            df: Standardized ADR-005 market data DataFrame.
+
+        Returns:
+            List of generated Signal objects.
+        """
+        min_required = self.contraction_days + 1
+        if df is None or df.empty or len(df) < min_required:
+            return []
+
+        data = df.copy()
+        symbol = str(data["symbol"].iloc[0])
+
+        # Daily high-low range
+        data["range"] = data["high"] - data["low"]
+
+        signals: List[Signal] = []
+
+        for i in range(min_required, len(data)):
+            curr_row = data.iloc[i]
+
+            # Look at prior contraction_days (e.g., i-3, i-2, i-1)
+            r1 = float(data["range"].iloc[i - 3])
+            r2 = float(data["range"].iloc[i - 2])
+            r3 = float(data["range"].iloc[i - 1])
+
+            # Check 3 consecutive days of shrinking range: r3 < r2 < r1
+            is_contracting = (r3 < r2) and (r2 < r1)
+
+            if not is_contracting:
+                continue
+
+            # Check OI accumulation: Cumulative OI growth over the contraction period >= 5%
+            has_oi_col = "open_interest" in data.columns and not data["open_interest"].isna().all()
+            if has_oi_col:
+                oi_start = float(data["open_interest"].iloc[i - 3])
+                oi_curr = float(data["open_interest"].iloc[i - 1])
+                oi_buildup = ((oi_curr - oi_start) / oi_start) if (oi_start > 0 and not pd.isna(oi_start) and not pd.isna(oi_curr)) else self.min_oi_buildup_pct
+            else:
+                # If Open Interest column is NaN (e.g. Yahoo Finance), check DataFrame metadata or default to threshold
+                oi_buildup = float(df.attrs.get("oi_buildup_pct", self.min_oi_buildup_pct))
+
+            if oi_buildup < self.min_oi_buildup_pct:
+                continue
+
+            # Check breakout above the 3-day max high
+            max_high_3d = float(
+                max(
+                    data["high"].iloc[i - 3],
+                    data["high"].iloc[i - 2],
+                    data["high"].iloc[i - 1],
+                )
+            )
+            min_low_3d = float(
+                min(
+                    data["low"].iloc[i - 3],
+                    data["low"].iloc[i - 2],
+                    data["low"].iloc[i - 1],
+                )
+            )
+
+            close_p = float(curr_row["close"])
+
+            if close_p > max_high_3d:
+                target_p = round(close_p * 1.04, 2)
+                stop_p = round(min_low_3d, 2) if min_low_3d < close_p else round(close_p * 0.98, 2)
+
+                signal = Signal(
+                    symbol=symbol,
+                    timestamp=curr_row.name,
+                    action="BUY",
+                    strategy_name=self.name,
+                    confidence=0.80,
+                    entry_price=close_p,
+                    target_price=target_p,
+                    stop_loss=stop_p,
+                    metadata={
+                        "type": "OPTION",
+                        "option_type": "c",
+                        "delta_target": 0.50,
+                        "range_contraction_days": self.contraction_days,
+                        "oi_buildup_pct": round(oi_buildup, 4),
+                        "3day_max_high": max_high_3d,
+                        "3day_min_low": min_low_3d,
+                    },
+                )
+                signals.append(signal)
+
+        return signals
+
+================================================================================
+FILE PATH: src/strategies/orb_momentum.py
+================================================================================
+"""
+Opening Range Breakout (ORB) Momentum Snipe Strategy.
+
+Strategy Logic:
+- Identifies the opening 15-minute price range (high and low).
+- Emits a high-confidence BUY signal when price breaks above opening range high
+  accompanied by volume expansion (> 2.0x 20-period average volume) and ATR expansion
+  (current 14-period ATR > 1.2x 14-period ATR SMA).
+- Tailored for Deep OTM momentum options setups on high-catalyst trading days.
+"""
+
+from typing import List
+import numpy as np
+import pandas as pd
+
+from src.strategies.base_strategy import BaseStrategy, Signal
+
+
+class ORBMomentumStrategy(BaseStrategy):
+    """
+    Opening Range Breakout (ORB) Momentum Strategy.
+
+    Triggers momentum buy signals when spot breaks out of the opening range
+    with volume confirmation > 2.0x average volume and expanding ATR (> 1.2x ATR SMA).
+    """
+
+    def __init__(
+        self,
+        volume_multiplier: float = 2.0,
+        vol_window: int = 20,
+        name: str = "ORBMomentumStrategy",
+    ):
+        """
+        Initialize the ORBMomentumStrategy parameters.
+
+        Args:
+            volume_multiplier: Minimum volume ratio compared to trailing average (default 2.0).
+            vol_window: Lookback window for volume moving average (default 20).
+            name: Strategy identifier name.
+        """
+        super().__init__(name=name)
+        self.volume_multiplier = volume_multiplier
+        self.vol_window = vol_window
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        """
+        Generate ORB momentum signals from standard market data DataFrame.
+
+        Args:
+            df: Standardized ADR-005 market data DataFrame.
+
+        Returns:
+            List of generated Signal objects.
+        """
+        if df is None or df.empty or len(df) < self.vol_window:
+            return []
+
+        data = df.copy()
+        symbol = str(data["symbol"].iloc[0])
+
+        # 20-period volume moving average
+        data["vol_avg"] = data["volume"].rolling(window=self.vol_window).mean()
+
+        # 14-period Average True Range (ATR) & ATR 14-period SMA
+        tr1 = data["high"] - data["low"]
+        tr2 = (data["high"] - data["close"].shift(1)).abs()
+        tr3 = (data["low"] - data["close"].shift(1)).abs()
+        data["tr"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        data["atr_14"] = data["tr"].rolling(window=14).mean()
+        data["atr_sma_14"] = data["atr_14"].rolling(window=14).mean()
+
+        signals: List[Signal] = []
+
+        has_intraday = isinstance(data.index, pd.DatetimeIndex) and any(
+            data.index.hour != 0
+        )
+
+        if has_intraday:
+            data["date"] = data.index.date
+            for date, group in data.groupby("date"):
+                if len(group) < 2:
+                    continue
+                first_bars = group.between_time("09:15", "09:30")
+                if first_bars.empty:
+                    first_bars = group.iloc[:1]
+
+                orb_high = float(first_bars["high"].max())
+                orb_low = float(first_bars["low"].min())
+
+                trading_bars = group[group.index > first_bars.index[-1]]
+                for idx, row in trading_bars.iterrows():
+                    close_p = float(row["close"])
+                    vol = float(row["volume"])
+                    vol_avg = float(row["vol_avg"]) if not pd.isna(row["vol_avg"]) else 0.0
+
+                    atr_val = float(row["atr_14"]) if not pd.isna(row["atr_14"]) else 0.0
+                    atr_sma = float(row["atr_sma_14"]) if not pd.isna(row["atr_sma_14"]) else 0.0
+                    atr_expanding = (atr_sma == 0.0) or (atr_val > 1.2 * atr_sma)
+
+                    if (
+                        close_p > orb_high
+                        and vol > (self.volume_multiplier * vol_avg)
+                        and vol_avg > 0
+                        and atr_expanding
+                    ):
+                        signal = Signal(
+                            symbol=symbol,
+                            timestamp=idx,
+                            action="BUY",
+                            strategy_name=self.name,
+                            confidence=0.85,
+                            entry_price=close_p,
+                            target_price=round(close_p * 1.03, 2),
+                            stop_loss=round(orb_low, 2) if orb_low < close_p else round(close_p * 0.98, 2),
+                            metadata={
+                                "type": "OPTION",
+                                "option_type": "c",
+                                "delta_target": "deep_otm_momentum",
+                                "opening_range_high": orb_high,
+                                "opening_range_low": orb_low,
+                                "volume_ratio": round(vol / vol_avg, 2) if vol_avg > 0 else 2.0,
+                                "atr_expanding": atr_expanding,
+                            },
+                        )
+                        signals.append(signal)
+        else:
+            for i in range(self.vol_window, len(data)):
+                row = data.iloc[i]
+                prev_row = data.iloc[i - 1]
+
+                close_p = float(row["close"])
+                open_p = float(row["open"])
+                high_p = float(row["high"])
+                low_p = float(row["low"])
+                vol = float(row["volume"])
+                vol_avg = float(row["vol_avg"])
+
+                if pd.isna(vol_avg) or vol_avg <= 0:
+                    continue
+
+                prev_range = float(prev_row["high"] - prev_row["low"])
+                orb_high = open_p + (0.3 * prev_range) if prev_range > 0 else open_p * 1.005
+                orb_low = min(open_p, low_p)
+
+                atr_val = float(row["atr_14"]) if not pd.isna(row["atr_14"]) else 0.0
+                atr_sma = float(row["atr_sma_14"]) if not pd.isna(row["atr_sma_14"]) else 0.0
+                atr_expanding = (atr_sma == 0.0) or (atr_val > 1.2 * atr_sma)
+
+                if (
+                    close_p > orb_high
+                    and vol > (self.volume_multiplier * vol_avg)
+                    and atr_expanding
+                ):
+                    signal = Signal(
+                        symbol=symbol,
+                        timestamp=row.name,
+                        action="BUY",
+                        strategy_name=self.name,
+                        confidence=0.85,
+                        entry_price=close_p,
+                        target_price=round(close_p * 1.03, 2),
+                        stop_loss=round(orb_low, 2) if orb_low < close_p else round(close_p * 0.98, 2),
+                        metadata={
+                            "type": "OPTION",
+                            "option_type": "c",
+                            "delta_target": "deep_otm_momentum",
+                            "opening_range_high": round(orb_high, 2),
+                            "opening_range_low": round(orb_low, 2),
+                            "volume_ratio": round(vol / vol_avg, 2),
+                            "atr_expanding": atr_expanding,
+                        },
+                    )
+                    signals.append(signal)
+
+        return signals
+
+================================================================================
+FILE PATH: src/risk/__init__.py
+================================================================================
+"""
+Risk & Position Management Engine module.
+
+Exports RiskManager for position sizing and stop-loss/target calculation.
+"""
+
+from src.risk.risk_manager import RiskManager
+
+__all__ = ["RiskManager"]
+
+================================================================================
+FILE PATH: src/risk/risk_manager.py
+================================================================================
+"""
+Risk & Position Management Engine (src/risk/).
+
+Defines RiskManager for position sizing, ATR/percentage stop-loss, and target price calculations.
+"""
+
+from typing import Optional, Tuple
+
+
+class RiskManager:
+    """
+    Manages trade position sizing, stop-loss calculation, and target pricing.
+    """
+
+    def __init__(
+        self,
+        account_capital: float = 100000.0,
+        max_risk_per_trade_pct: float = 0.02,
+        risk_reward_ratio: float = 2.0,
+    ):
+        """
+        Initialize the RiskManager.
+
+        Args:
+            account_capital: Total portfolio capital (default 100,000.0).
+            max_risk_per_trade_pct: Maximum capital risk per trade as decimal (default 0.02 = 2%).
+            risk_reward_ratio: Reward-to-Risk multiplier for target price (default 2.0).
+        """
+        self.account_capital = account_capital
+        self.max_risk_per_trade_pct = max_risk_per_trade_pct
+        self.risk_reward_ratio = risk_reward_ratio
+
+    def calculate_stop_and_target(
+        self, entry_price: float, action: str, atr: Optional[float] = None
+    ) -> Tuple[float, float]:
+        """
+        Calculate stop-loss and profit target prices.
+
+        Args:
+            entry_price: Entry trigger price.
+            action: Trade action ('BUY' or 'SELL').
+            atr: Optional Average True Range value. If provided and > 0, stop distance = 1.5 * ATR.
+                 Otherwise default stop distance = 2% of entry price.
+
+        Returns:
+            Tuple of (stop_loss, target_price).
+        """
+        if entry_price <= 0:
+            raise ValueError("Entry price must be positive.")
+
+        if atr is not None and atr > 0:
+            distance = 1.5 * atr
+        else:
+            distance = 0.02 * entry_price
+
+        action_upper = action.upper()
+        if action_upper == "BUY":
+            stop_loss = round(entry_price - distance, 2)
+            target_price = round(entry_price + (distance * self.risk_reward_ratio), 2)
+        elif action_upper == "SELL":
+            stop_loss = round(entry_price + distance, 2)
+            target_price = round(entry_price - (distance * self.risk_reward_ratio), 2)
+        else:
+            raise ValueError(f"Invalid trade action '{action}'. Must be 'BUY' or 'SELL'.")
+
+        return stop_loss, target_price
+
+    def calculate_position_size(
+        self, entry_price: float, stop_loss: float, lot_size: int = 1
+    ) -> int:
+        """
+        Calculate position sizing in units/shares based on account risk capital.
+
+        Args:
+            entry_price: Price per share/contract at entry.
+            stop_loss: Price per share/contract at stop-loss.
+            lot_size: Minimum trading lot increment (default 1).
+
+        Returns:
+            Position size rounded down to the nearest lot_size, respecting risk floor and notional capital cap.
+        """
+        risk_per_unit = abs(entry_price - stop_loss)
+
+        if entry_price <= 0 or risk_per_unit <= 0:
+            raise ValueError("Entry price and risk per unit must be > 0")
+
+        max_risk_amount = self.account_capital * self.max_risk_per_trade_pct
+        raw_shares = max_risk_amount / risk_per_unit
+        num_lots = int(raw_shares // lot_size)
+
+        # Fix 1 (The Floor): If num_lots == 0, return 0 (do not force a trade that breaches risk)
+        if num_lots == 0:
+            return 0
+
+        # Fix 2 (The Notional Cap): Ensure total notional value does not exceed account capital
+        notional_value = num_lots * lot_size * entry_price
+        while notional_value > self.account_capital and num_lots > 0:
+            num_lots -= 1
+            notional_value = num_lots * lot_size * entry_price
+
+        return num_lots * lot_size
+
+================================================================================
+FILE PATH: src/backtester/__init__.py
+================================================================================
+"""
+Backtesting Engine Module for the Indian Option Market platform.
+
+Provides synthetic Black-Scholes options pricing, trade tracking, backtesting
+execution, and side-by-side strategy benchmarking.
+"""
+
+from src.backtester.trade import Trade
+from src.backtester.synthetic_options import calculate_option_price
+from src.backtester.engine import BacktestEngine
+from src.backtester.benchmark import run_benchmark, calculate_max_drawdown
+
+__all__ = [
+    "Trade",
+    "calculate_option_price",
+    "BacktestEngine",
+    "run_benchmark",
+    "calculate_max_drawdown",
+]
+
+================================================================================
+FILE PATH: src/backtester/benchmark.py
+================================================================================
+"""
+Strategy Benchmarking & Performance Comparison Matrix.
+
+Runs all Phase 6/7 strategy modules against a market data DataFrame,
+calculates side-by-side performance metrics (Total Trades, Win Rate, Total PnL, Max Drawdown),
+and prints a formatted ASCII comparison matrix.
+"""
+
+from typing import Dict, Any, List
+import pandas as pd
+
+from src.strategies.orb_momentum import ORBMomentumStrategy
+from src.strategies.hedged_vol_premium import HedgedVolPremiumStrategy
+from src.strategies.oi_swing import OISwingStrategy
+from src.strategies.custom_research_strategy import RelativeStrengthVWAPReversionStrategy
+from src.backtester.engine import BacktestEngine
+
+
+def calculate_max_drawdown(trades: list, initial_capital: float = 100000.0) -> float:
+    """
+    Calculate Maximum Drawdown (in ₹) from a list of executed Trade objects.
+
+    Args:
+        trades: List of Trade objects returned by BacktestEngine.
+        initial_capital: Initial portfolio capital.
+
+    Returns:
+        Maximum Drawdown in currency (₹).
+    """
+    if not trades:
+        return 0.0
+
+    equity = initial_capital
+    peak = initial_capital
+    max_dd = 0.0
+
+    for trade in trades:
+        equity += trade.pnl
+        if equity > peak:
+            peak = equity
+        dd = peak - equity
+        if dd > max_dd:
+            max_dd = dd
+
+    return round(max_dd, 2)
+
+
+def run_benchmark(df: pd.DataFrame, initial_capital: float = 100000.0) -> Dict[str, Any]:
+    """
+    Run side-by-side performance benchmark for all 4 strategy modules.
+
+    Args:
+        df: Standardized ADR-005 market data DataFrame.
+        initial_capital: Initial portfolio capital for backtesting.
+
+    Returns:
+        Dictionary mapping strategy names to performance metrics.
+    """
+    strategies = [
+        ORBMomentumStrategy(),
+        HedgedVolPremiumStrategy(percentile_threshold=50.0),  # Adjust threshold for benchmark mock data
+        OISwingStrategy(),
+        RelativeStrengthVWAPReversionStrategy(vwap_dist_threshold=0.005),
+    ]
+
+    results = {}
+    rows = []
+
+    print("\n" + "=" * 85)
+    print(f"{'STRATEGY BENCHMARK & COMPARISON MATRIX':^85}")
+    print("=" * 85)
+    header = f"{'Strategy Name':<38} | {'Trades':<8} | {'Win Rate':<10} | {'Total PnL (₹)':<14} | {'Max DD (₹)':<12}"
+    print(header)
+    print("-" * 85)
+
+    for strat in strategies:
+        engine = BacktestEngine(strategy=strat, initial_capital=initial_capital)
+        res = engine.run(df)
+
+        metrics = res["metrics"]
+        trades = res["trades"]
+        max_dd = calculate_max_drawdown(trades, initial_capital)
+
+        total_trades = metrics["total_trades"]
+        win_rate_pct = f"{metrics['win_rate'] * 100:.1f}%"
+        total_pnl = f"₹{metrics['total_pnl']:,.2f}"
+        max_dd_fmt = f"₹{max_dd:,.2f}"
+
+        strat_name = strat.name
+        results[strat_name] = {
+            "total_trades": total_trades,
+            "win_rate_pct": win_rate_pct,
+            "total_pnl": metrics["total_pnl"],
+            "max_drawdown": max_dd,
+            "final_capital": metrics["final_capital"],
+            "trades": trades,
+        }
+
+        row_str = f"{strat_name:<38} | {total_trades:<8} | {win_rate_pct:<10} | {total_pnl:<14} | {max_dd_fmt:<12}"
+        print(row_str)
+
+    print("=" * 85 + "\n")
+    return results
+
+
+if __name__ == "__main__":
+    # Script entry point for standalone execution
+    import numpy as np
+
+    dates = pd.date_range(start="2024-01-01", periods=150, freq="D", tz="Asia/Kolkata")
+    np.random.seed(42)
+    base_price = 1000.0
+    returns = np.random.normal(0.001, 0.02, 150)
+    returns[110:130] = np.random.normal(0.005, 0.05, 20)
+
+    prices = [base_price]
+    for r in returns[1:]:
+        prices.append(prices[-1] * (1.0 + r))
+
+    volumes = [100000] * 150
+    volumes[50] = 300000
+
+    highs = [p * 1.015 for p in prices]
+    lows = [p * 0.985 for p in prices]
+
+    highs[80], lows[80] = prices[80] + 20.0, prices[80] - 20.0
+    highs[81], lows[81] = prices[81] + 10.0, prices[81] - 10.0
+    highs[82], lows[82] = prices[82] + 5.0, prices[82] - 5.0
+    highs[83], lows[83] = prices[83] + 25.0, prices[83] - 2.0
+    prices[83] = highs[82] + 10.0
+
+    sample_df = pd.DataFrame(
+        {
+            "symbol": ["RELIANCE"] * 150,
+            "open": prices,
+            "high": highs,
+            "low": lows,
+            "close": prices,
+            "adj_close": prices,
+            "volume": volumes,
+            "open_interest": [100000] * 150,
+        },
+        index=dates,
+    )
+    sample_df.index.name = "timestamp"
+
+    run_benchmark(sample_df)
+
+================================================================================
+FILE PATH: src/backtester/engine.py
+================================================================================
+"""
+Backtest Engine for offline strategy simulation.
+
+Feeds historical ADR-005 market data to Strategy Engine modules, integrates
+RiskManager for position sizing and stop-loss/target exit simulation, and calculates
+performance metrics (Win Rate, Total PnL, Final Capital).
+"""
+
+from typing import Dict, Any, List, Optional
+import pandas as pd
+
+from src.strategies.base_strategy import BaseStrategy, Signal
+from src.backtester.trade import Trade
+from src.backtester.synthetic_options import calculate_option_price
+from src.risk.risk_manager import RiskManager
+
+
+class BacktestEngine:
+    """
+    Simulates strategy execution against historical market data DataFrames with risk management.
+    """
+
+    def __init__(
+        self,
+        strategy: BaseStrategy,
+        initial_capital: float = 100000.0,
+        risk_manager: Optional[RiskManager] = None,
+    ):
+        """
+        Initialize the BacktestEngine.
+
+        Args:
+            strategy: Concrete strategy instance (subclass of BaseStrategy).
+            initial_capital: Starting portfolio capital balance (default 100,000.0).
+            risk_manager: Optional RiskManager instance. If None, default RiskManager is created.
+        """
+        self.strategy = strategy
+        self.initial_capital = initial_capital
+        self.risk_manager = risk_manager or RiskManager(account_capital=initial_capital)
+
+    def run(
+        self, df: pd.DataFrame, signals: Optional[List[Signal]] = None
+    ) -> Dict[str, Any]:
+        """
+        Run backtest simulation on an ADR-005 market data DataFrame.
+
+        Args:
+            df: Standardized market data DataFrame.
+            signals: Optional pre-filtered list of Signals. If None, generated via strategy.
+
+        Returns:
+            Dictionary containing performance metrics and list of executed Trades:
+            {
+                "metrics": {
+                    "total_trades": int,
+                    "winning_trades": int,
+                    "win_rate": float,
+                    "total_pnl": float,
+                    "final_capital": float,
+                },
+                "trades": List[Trade]
+            }
+        """
+        if df is None or df.empty:
+            return {
+                "metrics": {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "win_rate": 0.0,
+                    "total_pnl": 0.0,
+                    "final_capital": self.initial_capital,
+                },
+                "trades": [],
+            }
+
+        # 1. Use provided signals or generate signals via Strategy Engine
+        if signals is None:
+            signals = self.strategy.generate_signals(df)
+
+        trades: List[Trade] = []
+        timestamps = list(df.index)
+
+        # 2. Simulate trades for each generated signal
+        for signal in signals:
+            if signal.timestamp not in df.index:
+                continue
+
+            entry_idx = timestamps.index(signal.timestamp)
+            entry_row = df.iloc[entry_idx]
+            entry_spot = float(entry_row["close"])
+            entry_time = entry_row.name
+
+            entry_price = float(signal.entry_price) if signal.entry_price else entry_spot
+            action = signal.action.upper()
+
+            # Ensure stop_loss and target_price are populated via RiskManager
+            if signal.stop_loss is None or signal.target_price is None:
+                stop_loss, target_price = self.risk_manager.calculate_stop_and_target(
+                    entry_price, action
+                )
+                signal.stop_loss = stop_loss
+                signal.target_price = target_price
+            else:
+                stop_loss = float(signal.stop_loss)
+                target_price = float(signal.target_price)
+
+            # Calculate position size using RiskManager
+            quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss)
+
+            # Fix 2: If quantity is 0 (risk or capital limit breached), skip the trade
+            if quantity == 0:
+                continue
+
+            # Check if signal specifies an option trade
+            if signal.metadata.get("type") == "OPTION":
+                strike = entry_spot
+                # Fix 1: Extract option_type ('c' or 'p') and align for entry and exit
+                opt_type = signal.metadata.get("option_type", "c")
+
+                entry_premium = calculate_option_price(opt_type, entry_spot, strike, 30.0)
+                trade_type = "OPTION"
+
+                # Simulate exit for option trade
+                exit_price = round(entry_premium, 2)
+                exit_time = entry_time
+
+                for i in range(entry_idx + 1, len(df)):
+                    bar = df.iloc[i]
+                    bar_spot = float(bar["close"])
+
+                    # If target or stop hit on underlying, exit option trade
+                    if action == "BUY":
+                        if bar["high"] >= target_price or bar["low"] <= stop_loss:
+                            dte = max(30.0 - (i - entry_idx), 1.0)
+                            exit_premium = calculate_option_price(opt_type, bar_spot, strike, dte)
+                            exit_price = round(exit_premium, 2)
+                            exit_time = bar.name
+                            break
+                    elif action == "SELL":
+                        if bar["low"] <= target_price or bar["high"] >= stop_loss:
+                            dte = max(30.0 - (i - entry_idx), 1.0)
+                            exit_premium = calculate_option_price(opt_type, bar_spot, strike, dte)
+                            exit_price = round(exit_premium, 2)
+                            exit_time = bar.name
+                            break
+                else:
+                    # Final bar fallback
+                    final_bar = df.iloc[-1]
+                    final_spot = float(final_bar["close"])
+                    dte = max(30.0 - (len(df) - 1 - entry_idx), 1.0)
+                    exit_premium = calculate_option_price(opt_type, final_spot, strike, dte)
+                    exit_price = round(exit_premium, 2)
+                    exit_time = final_bar.name
+
+                pnl = round((exit_price - entry_premium) * quantity, 2)
+                pnl_percent = (
+                    round(((exit_price - entry_premium) / entry_premium) * 100.0, 2)
+                    if entry_premium > 0
+                    else 0.0
+                )
+
+                trade = Trade(
+                    symbol=signal.symbol,
+                    entry_time=entry_time,
+                    exit_time=exit_time,
+                    entry_price=round(entry_premium, 2),
+                    exit_price=exit_price,
+                    quantity=quantity,
+                    pnl=pnl,
+                    pnl_percent=pnl_percent,
+                    trade_type=trade_type,
+                    metadata={
+                        "strike": strike,
+                        "entry_spot": entry_spot,
+                        "option_type": opt_type,
+                        "strategy": signal.strategy_name,
+                        "confidence": signal.confidence,
+                    },
+                )
+            else:
+                # Standard Stock Trade with Risk-Based Exit Simulation
+                exit_price = float(df.iloc[-1]["close"])
+                exit_time = df.iloc[-1].name
+
+                for i in range(entry_idx + 1, len(df)):
+                    bar = df.iloc[i]
+                    high = float(bar["high"])
+                    low = float(bar["low"])
+
+                    if action == "BUY":
+                        # Check Stop Loss first for conservatism
+                        if low <= stop_loss:
+                            exit_price = stop_loss
+                            exit_time = bar.name
+                            break
+                        elif high >= target_price:
+                            exit_price = target_price
+                            exit_time = bar.name
+                            break
+                    elif action == "SELL":
+                        if high >= stop_loss:
+                            exit_price = stop_loss
+                            exit_time = bar.name
+                            break
+                        elif low <= target_price:
+                            exit_price = target_price
+                            exit_time = bar.name
+                            break
+
+                pnl = round(
+                    (exit_price - entry_price) * quantity
+                    if action == "BUY"
+                    else (entry_price - exit_price) * quantity,
+                    2,
+                )
+                pnl_percent = (
+                    round(((exit_price - entry_price) / entry_price) * 100.0, 2)
+                    if entry_price > 0
+                    else 0.0
+                )
+
+                trade = Trade(
+                    symbol=signal.symbol,
+                    entry_time=entry_time,
+                    exit_time=exit_time,
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    quantity=quantity,
+                    pnl=pnl,
+                    pnl_percent=pnl_percent,
+                    trade_type="STOCK",
+                    metadata={
+                        "strategy": signal.strategy_name,
+                        "confidence": signal.confidence,
+                        "stop_loss": stop_loss,
+                        "target_price": target_price,
+                    },
+                )
+
+            trades.append(trade)
+
+        # 3. Calculate summary metrics
+        total_trades = len(trades)
+        winning_trades = sum(1 for t in trades if t.pnl > 0)
+        win_rate = round(winning_trades / total_trades, 4) if total_trades > 0 else 0.0
+        total_pnl = round(sum(t.pnl for t in trades), 2)
+        final_capital = round(self.initial_capital + total_pnl, 2)
+
+        return {
+            "metrics": {
+                "total_trades": total_trades,
+                "winning_trades": winning_trades,
+                "win_rate": win_rate,
+                "total_pnl": total_pnl,
+                "final_capital": final_capital,
+            },
+            "trades": trades,
+        }
+
+================================================================================
+FILE PATH: src/backtester/synthetic_options.py
+================================================================================
+"""
+Synthetic Options Pricing Module using Black-Scholes-Merton.
+
+Enables historical options trade simulation off underlying equity OHLCV data
+without requiring expensive historical tick option datasets.
+"""
+
+from py_vollib.black_scholes import black_scholes
+
+
+def calculate_option_price(
+    flag: str,
+    S: float,
+    K: float,
+    days_to_expiry: float,
+    r: float = 0.065,
+    sigma: float = 0.20,
+) -> float:
+    """
+    Calculates Black-Scholes option price, handling expiration safely.
+
+    Args:
+        flag: Option flag ('c' for Call, 'p' for Put).
+        S: Current underlying asset spot price.
+        K: Strike price of the option contract.
+        days_to_expiry: Remaining time to expiration in days.
+        r: Annualized risk-free interest rate (default 0.065 = RBI repo rate proxy).
+        sigma: Implied volatility as a decimal (default 0.20 = 20% IV).
+
+    Returns:
+        Theoretical Black-Scholes option contract price / premium.
+    """
+    t = days_to_expiry / 365.0
+    if t <= 0.001:  # Expired or expiring today (intrinsic value)
+        return float(max(S - K, 0.0) if flag == "c" else max(K - S, 0.0))
+    return float(black_scholes(flag, S, K, t, r, sigma))
+
+================================================================================
+FILE PATH: src/backtester/trade.py
+================================================================================
+"""
+Trade Data Structure for Backtesting & Signal Execution.
+
+Defines the Trade dataclass tracking trade execution, entry/exit prices, PnL,
+and trade type ('STOCK' or 'OPTION').
+"""
+
+from dataclasses import dataclass, field
+from typing import Any, Dict
+
+
+@dataclass
+class Trade:
+    """
+    Dataclass tracking individual simulated or live trades.
+
+    Attributes:
+        symbol: Standardized internal symbol (e.g. 'RELIANCE').
+        entry_time: Timestamp of trade entry.
+        exit_time: Timestamp of trade exit.
+        entry_price: Price per share or option contract premium at entry.
+        exit_price: Price per share or option contract premium at exit.
+        quantity: Number of shares or option contracts traded.
+        pnl: Absolute monetary profit and loss (exit_price - entry_price) * quantity.
+        pnl_percent: Percentage return ((exit_price - entry_price) / entry_price) * 100.
+        trade_type: Instrument type ('STOCK' or 'OPTION').
+        metadata: Additional details (e.g. strike, expiry, Greeks, underlying price).
+    """
+
+    symbol: str
+    entry_time: Any
+    exit_time: Any
+    entry_price: float
+    exit_price: float
+    quantity: int
+    pnl: float
+    pnl_percent: float
+    trade_type: str = "STOCK"
+    metadata: Dict[str, Any] = field(default_factory=dict)
