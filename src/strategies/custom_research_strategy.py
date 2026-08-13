@@ -6,7 +6,8 @@ Based on quantitative research from QuantInsti and Zerodha Varsity institutional
 - Institutional execution algorithms (FII/DII) benchmark heavily against Volume Weighted Average Price (VWAP).
 - When a liquid FnO stock stretches > 1.5% away from VWAP concurrently with extreme RSI levels
   (RSI < 35 oversold or RSI > 65 overbought), price mean-reverts sharply back toward VWAP.
-- Options setup: Takes ATM Call/Put positions targeting rapid mean reversion with high Delta (0.50).
+- Nifty 50 Macro Trend Filter: Only generates BUY Call signals when Nifty 50 is above its 20-day SMA,
+  and BUY Put signals when Nifty 50 is below its 20-day SMA.
 """
 
 from typing import List
@@ -20,8 +21,7 @@ class RelativeStrengthVWAPReversionStrategy(BaseStrategy):
     """
     Relative Strength & VWAP Mean Reversion Strategy.
 
-    Combines VWAP distance tracking with 14-period RSI to capture institutional
-    mean-reversion opportunities in Indian FnO equities.
+    Combines VWAP distance tracking with 14-period RSI and Nifty 50 macro trend filter.
     """
 
     def __init__(
@@ -63,7 +63,7 @@ class RelativeStrengthVWAPReversionStrategy(BaseStrategy):
 
     def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
         """
-        Generate VWAP + RSI mean-reversion signals from standard market data DataFrame.
+        Generate VWAP + RSI mean-reversion signals with Nifty 50 macro trend filter.
 
         Args:
             df: Standardized ADR-005 market data DataFrame.
@@ -82,7 +82,6 @@ class RelativeStrengthVWAPReversionStrategy(BaseStrategy):
         data["tp"] = (data["high"] + data["low"] + data["close"]) / 3.0
         data["tp_vol"] = data["tp"] * data["volume"]
 
-        # Cumulative or rolling VWAP
         cum_tp_vol = data["tp_vol"].cumsum()
         cum_vol = data["volume"].cumsum()
         data["vwap"] = np.where(cum_vol > 0, cum_tp_vol / cum_vol, data["close"])
@@ -92,6 +91,10 @@ class RelativeStrengthVWAPReversionStrategy(BaseStrategy):
 
         # 3. Calculate RSI
         data["rsi"] = self._calculate_rsi(data["close"], self.rsi_period)
+
+        # 4. Check Nifty 50 Macro Trend Filter
+        # Reads from df.attrs or column 'nifty_above_20sma' if available; defaults to True for call, False for put
+        has_nifty_col = "nifty_above_20sma" in data.columns
 
         signals: List[Signal] = []
 
@@ -105,8 +108,23 @@ class RelativeStrengthVWAPReversionStrategy(BaseStrategy):
             if pd.isna(vwap_dist) or pd.isna(rsi_val):
                 continue
 
-            # Bullish Mean Reversion: Spot < VWAP (-1.5%) and RSI < 35 (Oversold) -> Buy CALL
-            if vwap_dist < -self.vwap_dist_threshold and rsi_val < self.rsi_oversold:
+            nifty_above_20sma_bull = (
+                bool(row["nifty_above_20sma"])
+                if has_nifty_col
+                else bool(df.attrs.get("nifty_above_20sma", True))
+            )
+            nifty_above_20sma_bear = (
+                bool(row["nifty_above_20sma"])
+                if has_nifty_col
+                else bool(df.attrs.get("nifty_above_20sma", False))
+            )
+
+            # Bullish Mean Reversion: Spot < VWAP (-1.5%), RSI < 35, and Nifty 50 above 20 SMA
+            if (
+                vwap_dist < -self.vwap_dist_threshold
+                and rsi_val < self.rsi_oversold
+                and nifty_above_20sma_bull is True
+            ):
                 target_p = round(vwap_p, 2)  # Revert back to VWAP
                 stop_p = round(price * 0.985, 2)
 
@@ -127,12 +145,17 @@ class RelativeStrengthVWAPReversionStrategy(BaseStrategy):
                         "rsi": round(rsi_val, 2),
                         "vwap_dist_pct": round(vwap_dist * 100, 2),
                         "vwap": round(vwap_p, 2),
+                        "nifty_above_20sma": True,
                     },
                 )
                 signals.append(signal)
 
-            # Bearish Mean Reversion: Spot > VWAP (+1.5%) and RSI > 65 (Overbought) -> Buy PUT
-            elif vwap_dist > self.vwap_dist_threshold and rsi_val > self.rsi_overbought:
+            # Bearish Mean Reversion: Spot > VWAP (+1.5%), RSI > 65, and Nifty 50 below 20 SMA
+            elif (
+                vwap_dist > self.vwap_dist_threshold
+                and rsi_val > self.rsi_overbought
+                and nifty_above_20sma_bear is False
+            ):
                 target_p = round(vwap_p, 2)
                 stop_p = round(price * 1.015, 2)
 
@@ -153,6 +176,7 @@ class RelativeStrengthVWAPReversionStrategy(BaseStrategy):
                         "rsi": round(rsi_val, 2),
                         "vwap_dist_pct": round(vwap_dist * 100, 2),
                         "vwap": round(vwap_p, 2),
+                        "nifty_above_20sma": False,
                     },
                 )
                 signals.append(signal)

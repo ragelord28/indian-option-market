@@ -3,7 +3,8 @@ Unit tests for Backtesting Engine (src/backtester/).
 
 Per CodingStandards.md:
 - Tests mirror src/ structure (src/backtester/ -> tests/test_backtester.py).
-- Tests cover synthetic Black-Scholes pricing, Trade tracking, and BacktestEngine execution.
+- Tests cover synthetic Black-Scholes pricing, Trade tracking, BacktestEngine execution,
+  and strategy benchmarking matrix.
 """
 
 from unittest.mock import MagicMock
@@ -14,6 +15,7 @@ import pytest
 from src.backtester.synthetic_options import calculate_option_price
 from src.backtester.trade import Trade
 from src.backtester.engine import BacktestEngine
+from src.backtester.benchmark import run_benchmark, calculate_max_drawdown
 from src.strategies.orb_momentum import ORBMomentumStrategy
 from src.strategies.base_strategy import Signal, BaseStrategy
 
@@ -35,7 +37,7 @@ def mock_adr005_df() -> pd.DataFrame:
             "close": prices,
             "adj_close": prices,
             "volume": volumes,
-            "open_interest": [np.nan] * 50,
+            "open_interest": [100000] * 50,
         },
         index=dates,
     )
@@ -162,3 +164,16 @@ def test_backtest_engine_risk_based_exit():
 
     assert trade.exit_price == 104.0
     assert trade.pnl > 0
+
+
+def test_run_benchmark(mock_adr005_df: pd.DataFrame):
+    """Test side-by-side strategy benchmarking execution and matrix generation."""
+    results = run_benchmark(mock_adr005_df)
+
+    assert isinstance(results, dict)
+    assert len(results) == 4
+    for strat_name, metrics in results.items():
+        assert "total_trades" in metrics
+        assert "win_rate_pct" in metrics
+        assert "total_pnl" in metrics
+        assert "max_drawdown" in metrics

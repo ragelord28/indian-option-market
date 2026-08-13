@@ -2,10 +2,9 @@
 Tail-Hedged Volatility Premium Strategy.
 
 Strategy Logic:
-- Calculates 20-day annualized Historical Volatility (HV).
-- Calculates the HV percentile rank over a trailing 100-day window to simulate IV Rank (IVR).
-- Emits a premium-selling SELL signal (simulating Credit Spreads / Iron Condors) when HV percentile > 80th percentile.
-- Configured with 0.20 Delta target per Quant_Rules.md.
+- Calculates 20-day annualized Historical Volatility (HV) and HV percentile rank (simulating high IVR > 80th percentile).
+- Trend Filter: Ensures spot price is within 1.0 standard deviation of its 20-day SMA (|price - SMA20| <= 1.0 * STD20) to avoid selling into runaway trending markets.
+- Emits premium-selling SELL signals (Credit Spreads / Iron Condors) with 0.20 Delta target.
 """
 
 from typing import List
@@ -20,7 +19,7 @@ class HedgedVolPremiumStrategy(BaseStrategy):
     Tail-Hedged Volatility Premium Strategy.
 
     Identifies elevated volatility regimes (HV percentile > 80th percentile)
-    to sell option premium via credit spread / iron condor structures.
+    with non-runaway trend bounds (|price - SMA20| <= 1.0 * STD20) to sell premium safely.
     """
 
     def __init__(
@@ -28,21 +27,24 @@ class HedgedVolPremiumStrategy(BaseStrategy):
         hv_period: int = 20,
         lookback_window: int = 100,
         percentile_threshold: float = 80.0,
+        max_std_dev_dist: float = 1.0,
         name: str = "HedgedVolPremiumStrategy",
     ):
         """
         Initialize the HedgedVolPremiumStrategy parameters.
 
         Args:
-            hv_period: Period for historical volatility calculation (default 20 days).
+            hv_period: Period for historical volatility & SMA calculation (default 20 days).
             lookback_window: Trailing window for HV percentile ranking (default 100 days).
             percentile_threshold: Minimum percentile threshold to trigger premium sell (default 80.0).
+            max_std_dev_dist: Maximum allowed price distance from 20 SMA in standard deviations (default 1.0).
             name: Strategy identifier name.
         """
         super().__init__(name=name)
         self.hv_period = hv_period
         self.lookback_window = lookback_window
         self.percentile_threshold = percentile_threshold
+        self.max_std_dev_dist = max_std_dev_dist
 
     def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
         """
@@ -70,10 +72,13 @@ class HedgedVolPremiumStrategy(BaseStrategy):
         hv_max = data["hv_20"].rolling(window=self.lookback_window).max()
         hv_denom = hv_max - hv_min
 
-        # Avoid division by zero
         data["hv_percentile"] = np.where(
             hv_denom > 0, ((data["hv_20"] - hv_min) / hv_denom) * 100.0, 0.0
         )
+
+        # 3. 20-day SMA and 20-day Standard Deviation for trend bound filter
+        data["sma_20"] = data["close"].rolling(window=self.hv_period).mean()
+        data["std_20"] = data["close"].rolling(window=self.hv_period).std()
 
         signals: List[Signal] = []
 
@@ -81,11 +86,16 @@ class HedgedVolPremiumStrategy(BaseStrategy):
             row = data.iloc[i]
             hv_pct = float(row["hv_percentile"])
             price = float(row["close"])
+            sma_20 = float(row["sma_20"])
+            std_20 = float(row["std_20"])
 
-            if pd.isna(hv_pct):
+            if pd.isna(hv_pct) or pd.isna(sma_20) or pd.isna(std_20) or std_20 <= 0:
                 continue
 
-            if hv_pct > self.percentile_threshold:
+            # Trend Filter: |price - SMA20| <= 1.0 * STD20
+            within_trend_bounds = abs(price - sma_20) <= (self.max_std_dev_dist * std_20)
+
+            if hv_pct > self.percentile_threshold and within_trend_bounds:
                 target_p = round(price * 0.98, 2)
                 stop_p = round(price * 1.02, 2)
 
@@ -105,6 +115,7 @@ class HedgedVolPremiumStrategy(BaseStrategy):
                         "delta_target": 0.20,
                         "hv_20": round(float(row["hv_20"]), 4),
                         "hv_percentile": round(hv_pct, 2),
+                        "within_trend_bounds": True,
                     },
                 )
                 signals.append(signal)
