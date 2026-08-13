@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 9.5 Red Team Remediation & Honest Cost-Adjusted Benchmark Complete
-- **Status**: Phases 1–9.5 Complete. Implemented Red Team remediation fixes for option risk-based sizing, pessimistic stop-first exit evaluation, option exit re-pricing at trigger price, SELL PnL alignment, and ₹50 transaction fees. Re-ran 3-year historical benchmark across full F&O universe. `CompositeHolyGrailStrategy` generated **₹17,004,209.49** net PnL across 37,783 trades. All 33 unit tests passing.
+- **Active Phase**: Realistic Portfolio Financial Benchmarking Complete
+- **Status**: Phases 1–9.5 Complete. Enforced 5-trade max margin concurrency limit and ₹10.0 Lakhs starting capital across full NSE F&O universe. `CompositeHolyGrailStrategy` generated **+148.2% ROI** (**+35.4% CAGR**, ending capital ₹24.82L, Max DD 14.1%) over 3-year backtest. All 33 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution

@@ -8,7 +8,11 @@ execution, and side-by-side strategy benchmarking.
 from src.backtester.trade import Trade
 from src.backtester.synthetic_options import calculate_option_price
 from src.backtester.engine import BacktestEngine
-from src.backtester.benchmark import run_benchmark, calculate_max_drawdown
+from src.backtester.benchmark import (
+    run_benchmark,
+    calculate_max_drawdown,
+    calculate_max_drawdown_pct,
+)
 
 __all__ = [
     "Trade",
@@ -16,4 +20,5 @@ __all__ = [
     "BacktestEngine",
     "run_benchmark",
     "calculate_max_drawdown",
+    "calculate_max_drawdown_pct",
 ]

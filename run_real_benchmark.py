@@ -1,10 +1,9 @@
 """
 Real Historical Data Benchmark Runner across Full NSE F&O Universe.
 
-Phase 9 expansion: Downloads 3 years of historical daily market data via YahooFinanceProvider
-for the FULL_FNO_UNIVERSE (~160+ stocks), runs all 5 strategy modules through BacktestEngine,
-aggregates cross-portfolio metrics (Total Trades, Win Rate %, Total PnL, Max Drawdown),
-and outputs a formatted ASCII comparison table.
+Enforces portfolio capital constraints (₹10 Lakhs starting capital, 5 max concurrent margin trades),
+calculates full financial metrics (Ending Capital, ROI %, CAGR %, Max Drawdown %, Win Rate %, Total Trades),
+and outputs a formatted ASCII benchmark comparison table.
 """
 
 from datetime import datetime, timedelta
@@ -20,13 +19,17 @@ from src.strategies.oi_swing import OISwingStrategy
 from src.strategies.custom_research_strategy import RelativeStrengthVWAPReversionStrategy
 from src.strategies.composite_holy_grail import CompositeHolyGrailStrategy
 from src.backtester.engine import BacktestEngine
-from src.backtester.benchmark import calculate_max_drawdown
+from src.backtester.benchmark import calculate_max_drawdown_pct
+
+
+STARTING_CAPITAL = 1000000.0  # ₹10 Lakhs
+MAX_CONCURRENT_TRADES = 5
 
 
 def main():
-    print("=" * 95)
-    print(f"{'REAL HISTORICAL DATA BENCHMARK (FULL NSE F&O UNIVERSE)':^95}")
-    print("=" * 95)
+    print("=" * 125)
+    print(f"{'REAL HISTORICAL DATA BENCHMARK (FULL NSE F&O UNIVERSE)':^125}")
+    print("=" * 125)
 
     provider = YahooFinanceProvider()
 
@@ -37,7 +40,8 @@ def main():
     end_date = end_dt.strftime("%Y-%m-%d")
 
     print(f"Fetch Period: {start_date} to {end_date}")
-    print(f"Target Universe: {len(FULL_FNO_UNIVERSE)} F&O equities\n")
+    print(f"Target Universe: {len(FULL_FNO_UNIVERSE)} F&O equities")
+    print(f"Starting Capital: ₹{STARTING_CAPITAL:,.2f} | Max Concurrent Trades: {MAX_CONCURRENT_TRADES}\n")
 
     # Instantiate strategies
     strategies = [
@@ -74,51 +78,84 @@ def main():
 
     for strat in strategies:
         strat_name = strat.name
-        all_trades = []
-        total_pnl_sum = 0.0
+        candidate_trades = []
 
         for symbol, df in stock_dfs.items():
-            engine = BacktestEngine(strategy=strat, initial_capital=100000.0)
+            engine = BacktestEngine(
+                strategy=strat,
+                initial_capital=STARTING_CAPITAL,
+                max_concurrent_trades=MAX_CONCURRENT_TRADES,
+            )
             res = engine.run(df)
+            candidate_trades.extend(res["trades"])
 
-            trades = res["trades"]
-            all_trades.extend(trades)
-            total_pnl_sum += res["metrics"]["total_pnl"]
+        # Sort candidate trades chronologically by entry_time
+        candidate_trades.sort(key=lambda t: t.entry_time)
 
-        total_trades = len(all_trades)
-        winning_trades = sum(1 for t in all_trades if t.pnl > 0)
+        # Portfolio-level max concurrent trades filter
+        portfolio_trades = []
+        for t in candidate_trades:
+            active_count = sum(
+                1 for pt in portfolio_trades if pt.entry_time <= t.entry_time < pt.exit_time
+            )
+            if active_count < MAX_CONCURRENT_TRADES:
+                portfolio_trades.append(t)
+
+        total_trades = len(portfolio_trades)
+        winning_trades = sum(1 for t in portfolio_trades if t.pnl > 0)
         win_rate = (winning_trades / total_trades) if total_trades > 0 else 0.0
         win_rate_pct = f"{win_rate * 100:.1f}%"
 
-        # Portfolio-level max drawdown calculation
-        max_dd = calculate_max_drawdown(all_trades, initial_capital=100000.0)
+        total_pnl = sum(t.pnl for t in portfolio_trades)
+        ending_capital = round(STARTING_CAPITAL + total_pnl, 2)
+        roi_pct = ((ending_capital - STARTING_CAPITAL) / STARTING_CAPITAL) * 100.0
+
+        if ending_capital > 0:
+            cagr_pct = (((ending_capital / STARTING_CAPITAL) ** (1.0 / 3.0)) - 1.0) * 100.0
+        else:
+            cagr_pct = -100.0
+
+        max_dd_pct = calculate_max_drawdown_pct(
+            portfolio_trades, initial_capital=STARTING_CAPITAL
+        )
 
         strategy_results[strat_name] = {
-            "total_trades": total_trades,
-            "winning_trades": winning_trades,
+            "starting_capital": STARTING_CAPITAL,
+            "ending_capital": ending_capital,
+            "roi_pct": roi_pct,
+            "cagr_pct": cagr_pct,
+            "max_dd_pct": max_dd_pct,
             "win_rate_pct": win_rate_pct,
-            "total_pnl": round(total_pnl_sum, 2),
-            "max_drawdown": max_dd,
+            "total_trades": total_trades,
         }
 
     # Print ASCII summary table
-    print("=" * 95)
-    print(f"{'FULL NSE F&O UNIVERSE HISTORICAL BENCHMARK RESULTS':^95}")
-    print("=" * 95)
-    header = f"{'Strategy Name':<42} | {'Trades':<8} | {'Win Rate':<10} | {'Total PnL (₹)':<14} | {'Max DD (₹)':<12}"
+    print("=" * 125)
+    print(f"{'FULL NSE F&O UNIVERSE FINANCIAL BENCHMARK RESULTS':^125}")
+    print("=" * 125)
+    header = (
+        f"{'Strategy Name':<38} | {'Start Cap (₹)':<14} | {'End Cap (₹)':<15} | "
+        f"{'ROI (%)':<9} | {'CAGR (%)':<9} | {'Max DD (%)':<10} | {'Win Rate':<9} | {'Trades':<7}"
+    )
     print(header)
-    print("-" * 95)
+    print("-" * 125)
 
     for strat_name, metrics in strategy_results.items():
-        t_trades = metrics["total_trades"]
+        start_cap_str = f"₹{metrics['starting_capital']:,.2f}"
+        end_cap_str = f"₹{metrics['ending_capital']:,.2f}"
+        roi_str = f"{metrics['roi_pct']:+.1f}%"
+        cagr_str = f"{metrics['cagr_pct']:+.1f}%"
+        dd_str = f"{metrics['max_dd_pct']:.1f}%"
         w_rate = metrics["win_rate_pct"]
-        pnl_str = f"₹{metrics['total_pnl']:,.2f}"
-        dd_str = f"₹{metrics['max_drawdown']:,.2f}"
+        t_trades = metrics["total_trades"]
 
-        row_str = f"{strat_name:<42} | {t_trades:<8} | {w_rate:<10} | {pnl_str:<14} | {dd_str:<12}"
+        row_str = (
+            f"{strat_name:<38} | {start_cap_str:<14} | {end_cap_str:<15} | "
+            f"{roi_str:<9} | {cagr_str:<9} | {dd_str:<10} | {w_rate:<9} | {t_trades:<7}"
+        )
         print(row_str)
 
-    print("=" * 95 + "\n")
+    print("=" * 125 + "\n")
 
 
 if __name__ == "__main__":

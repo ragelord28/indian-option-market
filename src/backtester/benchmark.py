@@ -49,6 +49,39 @@ def calculate_max_drawdown(trades: list, initial_capital: float = 100000.0) -> f
     return round(max_dd, 2)
 
 
+def calculate_max_drawdown_pct(trades: list, initial_capital: float = 1000000.0) -> float:
+    """
+    Calculate Maximum Drawdown (%) relative to peak capital from a list of executed Trade objects,
+    sorting trades chronologically by exit time first.
+
+    Args:
+        trades: List of Trade objects returned by BacktestEngine.
+        initial_capital: Initial portfolio capital.
+
+    Returns:
+        Maximum Drawdown percentage (0.0 to 100.0).
+    """
+    if not trades:
+        return 0.0
+
+    sorted_trades = sorted(trades, key=lambda t: t.exit_time)
+
+    equity = initial_capital
+    peak = initial_capital
+    max_dd_pct = 0.0
+
+    for trade in sorted_trades:
+        equity += trade.pnl
+        if equity > peak:
+            peak = equity
+        dd_rupees = peak - equity
+        dd_pct = (dd_rupees / peak * 100.0) if peak > 0 else 0.0
+        if dd_pct > max_dd_pct:
+            max_dd_pct = dd_pct
+
+    return round(max_dd_pct, 2)
+
+
 def run_benchmark(df: pd.DataFrame, initial_capital: float = 100000.0) -> Dict[str, Any]:
     """
     Run side-by-side performance benchmark for strategy modules.

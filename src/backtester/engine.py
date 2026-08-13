@@ -33,6 +33,7 @@ class BacktestEngine:
         strategy: BaseStrategy,
         initial_capital: float = 100000.0,
         risk_manager: Optional[RiskManager] = None,
+        max_concurrent_trades: int = 5,
     ):
         """
         Initialize the BacktestEngine.
@@ -41,10 +42,12 @@ class BacktestEngine:
             strategy: Concrete strategy instance (subclass of BaseStrategy).
             initial_capital: Starting portfolio capital balance (default 100,000.0).
             risk_manager: Optional RiskManager instance. If None, default RiskManager is created.
+            max_concurrent_trades: Maximum allowed open positions at any bar (default 5).
         """
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.risk_manager = risk_manager or RiskManager(account_capital=initial_capital)
+        self.max_concurrent_trades = max_concurrent_trades
 
     def run(
         self, df: pd.DataFrame, signals: Optional[List[Signal]] = None
@@ -99,6 +102,14 @@ class BacktestEngine:
             entry_spot = float(entry_row["close"])
             entry_time = entry_row.name
 
+            # Enforce max_concurrent_trades open position limit
+            if self.max_concurrent_trades is not None and self.max_concurrent_trades > 0:
+                active_trades_count = sum(
+                    1 for t in trades if t.entry_time <= entry_time < t.exit_time
+                )
+                if active_trades_count >= self.max_concurrent_trades:
+                    continue
+
             entry_price = float(signal.entry_price) if signal.entry_price else entry_spot
             action = signal.action.upper()
 
@@ -142,7 +153,7 @@ class BacktestEngine:
                 trigger_price = entry_spot
                 exit_bar_idx = entry_idx
 
-                # 3. Pessimistic Exits
+                # 3. Pessimistic Exits & Expiration / 30-bar holding limit
                 for i in range(entry_idx + 1, len(df)):
                     bar = df.iloc[i]
                     low = float(bar["low"])
@@ -170,6 +181,13 @@ class BacktestEngine:
                             exit_time = bar.name
                             exit_bar_idx = i
                             break
+
+                    # Expiration at 30 DTE / bars max
+                    if (i - entry_idx) >= 30:
+                        trigger_price = float(bar["close"])
+                        exit_time = bar.name
+                        exit_bar_idx = i
+                        break
                 else:
                     # Final bar fallback
                     final_bar = df.iloc[-1]
@@ -232,7 +250,7 @@ class BacktestEngine:
                 exit_time = df.iloc[-1].name
                 trigger_price = float(df.iloc[-1]["close"])
 
-                # 3. Pessimistic Exits
+                # 3. Pessimistic Exits & 30-bar holding limit
                 for i in range(entry_idx + 1, len(df)):
                     bar = df.iloc[i]
                     low = float(bar["low"])
@@ -256,6 +274,12 @@ class BacktestEngine:
                             trigger_price = target_price
                             exit_time = bar.name
                             break
+
+                    # 30-bar max holding limit for stocks
+                    if (i - entry_idx) >= 30:
+                        trigger_price = float(bar["close"])
+                        exit_time = bar.name
+                        break
 
                 exit_price = trigger_price
                 if action == "SELL":
