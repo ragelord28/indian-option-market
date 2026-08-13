@@ -63,19 +63,22 @@ To protect broker API rate limits and keep operations cost-effective, the system
    - **Timing**: Runs End-of-Day (EOD).
    - **Data Sources**: Uses `yfinance` (underlying stocks/indices) and `nsepython` (free public NSE web scraping) to scan the ~150 F&O stock universe.
    - **Function**: Performs broad technical and quantitative analysis to filter 150 stocks down to a focused shortlist of 3–5 high-conviction candidate stocks for the upcoming trading session.
-   - **Constraint**: **NEVER** uses broker APIs (e.g., Upstox) to preserve API quota.
+2. **Agent 1.5: The 9:30 AM Radar**
+   - **Timing**: Runs a lightweight snapshot query at exactly 9:31 AM.
+   - **Data Sources**: Uses the Upstox API on the Top 50 universe.
+   - **Function**: Fetches only the first 15-minute candle to identify spontaneous Opening Range Breakouts (ORB) and high-volume gaps. Passes these 1–2 live targets to Agent 2, preventing the need to stream live data for the entire universe.
 
-2. **Agent 2: D-Day Monitor (The Sniper)**
+3. **Agent 2: D-Day Monitor (The Sniper)**
    - **Timing**: Runs live during market hours.
-   - **Data Sources**: Uses the **Upstox API ONLY**, strictly targeted at the 3–5 shortlisted stocks produced by Agent 1.
+   - **Data Sources**: Uses the **Upstox API ONLY**, strictly targeted at the 3–5 shortlisted stocks produced by Agent 1 & Agent 1.5.
    - **Function**: Monitors live options chains, real-time intraday ticks, implied volatility (IV), open interest (OI) shifts, and execution triggers.
 
-3. **Agent 3: The Validator**
+4. **Agent 3: The Validator**
    - **Timing**: Interactive / on-demand during trade evaluation.
    - **Data Sources**: Upstox API and risk management engine.
    - **Function**: Validates manual trade decisions or broker calls against system risk parameters, position sizing rules, and portfolio limits.
 
-4. **Agent 4: The Backtester**
+5. **Agent 4: The Backtester**
    - **Timing**: Offline strategy research & development.
    - **Data Sources**: `yfinance` underlying historical OHLCV data combined with **Black-Scholes Synthetic Option Pricing** (`py_vollib`).
    - **Function**: Simulates historical options trades without requiring expensive or unavailable historical options tick data by synthetically pricing options contracts off historical underlying price and IV surfaces.
