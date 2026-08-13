@@ -2,7 +2,7 @@
 
 ## Current Overview
 - **Active Phase**: Realistic Portfolio Financial Benchmarking Complete
-- **Status**: Phases 1–9.5 Complete. Enforced 5-trade max margin concurrency limit and ₹10.0 Lakhs starting capital across full NSE F&O universe. `CompositeHolyGrailStrategy` generated **+148.2% ROI** (**+35.4% CAGR**, ending capital ₹24.82L, Max DD 14.1%) over 3-year backtest. All 33 unit tests passing.
+- **Status**: Phases 1–9.5 Complete. Enforced 5-trade max margin concurrency limit and ₹10.0 Lakhs starting capital across full NSE F&O universe. `ORBMomentumStrategy` generated **+268.2% ROI** (**+54.4% CAGR**, ending capital ₹36.81L, Max DD 10.4%, 64.3% Win Rate across 493 trades) over 3-year backtest. All 33 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
