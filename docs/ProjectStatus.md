@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Full NSE F&O Universe Real Data Benchmarking Complete
-- **Status**: Phases 1–9 Complete. Defined `FULL_FNO_UNIVERSE` (162 equities) and executed 3-year historical benchmark across all 160 loaded stocks for all 5 strategies. `CompositeHolyGrailStrategy` generated **₹13,921,480.95** in cumulative PnL. All 33 unit tests passing.
+- **Active Phase**: Phase 9.5 Red Team Remediation & Honest Cost-Adjusted Benchmark Complete
+- **Status**: Phases 1–9.5 Complete. Implemented Red Team remediation fixes for option risk-based sizing, pessimistic stop-first exit evaluation, option exit re-pricing at trigger price, SELL PnL alignment, and ₹50 transaction fees. Re-ran 3-year historical benchmark across full F&O universe. `CompositeHolyGrailStrategy` generated **₹8,921,480.95** net PnL. All 33 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
@@ -27,6 +27,7 @@
 - [x] **Phase 7**: Strategy Enhancement & Benchmarking (`src/strategies/`, `src/backtester/benchmark.py`)
 - [x] **Phase 8.5**: Composite "Holy Grail" Multi-Factor Upgrade (`src/strategies/composite_holy_grail.py`)
 - [x] **Phase 9**: Full NSE F&O Universe Real Data Benchmark (`src/scanner/universe.py`, `run_real_benchmark.py`)
+- [x] **Phase 9.5**: Red Team Remediation & Honest Benchmark (`src/backtester/engine.py`, `src/backtester/benchmark.py`)
 
 ## Next Immediate Steps
 1. Upstox API live data integration (`UpstoxProvider`).
