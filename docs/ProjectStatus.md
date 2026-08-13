@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 5 Checkpoint & Architecture Review Complete
-- **Status**: Phases 1–5 Complete. Thin, working, end-to-end vertical slice (`Data` → `Strategy` → `Risk` → `Signal Filter` → `Audit Logging` → `Backtest Engine` → `Orchestrator`) fully implemented with 26 unit tests passing.
+- **Active Phase**: Phase 6 Strategy Engineering Complete
+- **Status**: Phases 1–6 Complete. Legacy code cleaned up. Built `ORBMomentumStrategy`, `HedgedVolPremiumStrategy`, `OISwingStrategy`, and web-researched `RelativeStrengthVWAPReversionStrategy`. All 30 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
@@ -19,14 +19,17 @@
 ## Phase Progress
 - [x] **Phase 0**: Knowledge Base & Environment Setup
 - [x] **Phase 1**: Data Ingestion Layer (`src/data/`, `YahooFinanceProvider`, Parquet Caching, `tests/test_data.py`)
-- [x] **Phase 2**: Minimal Strategy Engine (`src/strategies/`, `Signal`, Rule 8 Filter, `SMACrossoverStrategy`, `Quant_Rules.md`)
+- [x] **Phase 2**: Minimal Strategy Engine (`src/strategies/`, `Signal`, Rule 8 Filter, `Quant_Rules.md`)
 - [x] **Phase 3**: Minimal Backtesting Engine (`src/backtester/`, `Trade`, `calculate_option_price`, `BacktestEngine`, `tests/test_backtester.py`)
 - [x] **Phase 4**: Risk & Signal Management (`src/risk/`, `RiskManager`, ATR/Percentage Stop/Target, Position Sizing, `tests/test_risk.py`)
 - [x] **Phase 5**: Audit Logging & Orchestrator Checkpoint (`src/audit_log/`, `src/orchestrator/`, `AuditLogger`, `PipelineRunner`, `tests/test_audit_log.py`)
+- [x] **Phase 6**: Strategy Engineering (`src/strategies/`, ORB, Hedged Vol Premium, OI Swing, RS+VWAP Reversion)
 
 ## Next Immediate Steps
-1. Evaluate Phase 1–5 offline vertical slice performance results.
-2. Prepare Phase 6+ planning (Upstox API integration, option chain processing, live orchestrator monitoring loop, and UI dashboard).
+1. Upstox API live data integration (`UpstoxProvider`).
+2. Option chain processing & live monitoring loop.
+3. Dashboard UI (`src/ui/`).
+
 
 
 
