@@ -95,7 +95,7 @@ class ORBMomentumStrategy(BaseStrategy):
 
                     atr_val = float(row["atr_14"]) if not pd.isna(row["atr_14"]) else 0.0
                     atr_sma = float(row["atr_sma_14"]) if not pd.isna(row["atr_sma_14"]) else 0.0
-                    atr_expanding = (atr_sma > 0.0) and (atr_val > 1.2 * atr_sma)
+                    atr_expanding = (atr_sma > 0.0) and (atr_val > 1.25 * atr_sma)
 
                     if (
                         close_p > orb_high
@@ -144,7 +144,7 @@ class ORBMomentumStrategy(BaseStrategy):
 
                 atr_val = float(row["atr_14"]) if not pd.isna(row["atr_14"]) else 0.0
                 atr_sma = float(row["atr_sma_14"]) if not pd.isna(row["atr_sma_14"]) else 0.0
-                atr_expanding = (atr_sma > 0.0) and (atr_val > 1.2 * atr_sma)
+                atr_expanding = (atr_sma > 0.0) and (atr_val > 1.25 * atr_sma)
 
                 if (
                     close_p > orb_high

@@ -10,6 +10,7 @@ Per CodingStandards.md:
   3. OISwingStrategy
   4. RelativeStrengthVWAPReversionStrategy
   5. CompositeHolyGrailStrategy
+  6. AVPCAfternoonStrategy
 """
 
 import numpy as np
@@ -22,6 +23,7 @@ from src.strategies.hedged_vol_premium import HedgedVolPremiumStrategy
 from src.strategies.oi_swing import OISwingStrategy
 from src.strategies.custom_research_strategy import RelativeStrengthVWAPReversionStrategy
 from src.strategies.composite_holy_grail import CompositeHolyGrailStrategy
+from src.strategies.avpc_afternoon import AVPCAfternoonStrategy
 
 
 @pytest.fixture
@@ -249,7 +251,19 @@ def test_composite_holy_grail_strategy(mock_adr005_df: pd.DataFrame):
     assert isinstance(signals, list)
     for sig in signals:
         assert "composite_factors" in sig.metadata
-        # Check that filter_signal_rule_8 evaluates composite confidence
         passed = strategy.filter_signal_rule_8(sig)
         assert isinstance(passed, bool)
         assert sig.confidence >= 0.50
+
+
+def test_avpc_afternoon_strategy(mock_adr005_df: pd.DataFrame):
+    """Test AVPCAfternoonStrategy Anchored VWAP Continuation signal generation."""
+    strategy = AVPCAfternoonStrategy()
+    signals = strategy.generate_signals(mock_adr005_df)
+
+    assert isinstance(signals, list)
+    for sig in signals:
+        assert sig.action == "BUY"
+        assert sig.confidence == 0.85
+        assert sig.metadata["regime"] == "bull_avpc"
+        assert strategy.filter_signal_rule_8(sig) is True

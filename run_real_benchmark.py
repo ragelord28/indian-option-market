@@ -1,7 +1,9 @@
 """
-Real Historical Data Benchmark Runner across Full NSE F&O Universe.
+Real Historical Intraday Data Benchmark Runner across Full NSE F&O Universe.
 
-Enforces portfolio capital constraints (₹10 Lakhs starting capital, 5 max concurrent margin trades),
+Phase 10: Downloads 60 days of 15-minute intraday market data via YahooFinanceProvider
+for the FULL_FNO_UNIVERSE (~160+ stocks), runs all 6 strategy modules through BacktestEngine,
+enforces portfolio capital constraints (₹10 Lakhs starting capital, 5 max concurrent margin trades),
 calculates full financial metrics (Ending Capital, ROI %, CAGR %, Max Drawdown %, Win Rate %, Total Trades),
 and outputs a formatted ASCII benchmark comparison table.
 """
@@ -18,6 +20,7 @@ from src.strategies.hedged_vol_premium import HedgedVolPremiumStrategy
 from src.strategies.oi_swing import OISwingStrategy
 from src.strategies.custom_research_strategy import RelativeStrengthVWAPReversionStrategy
 from src.strategies.composite_holy_grail import CompositeHolyGrailStrategy
+from src.strategies.avpc_afternoon import AVPCAfternoonStrategy
 from src.backtester.engine import BacktestEngine
 from src.backtester.benchmark import calculate_max_drawdown_pct
 
@@ -28,18 +31,18 @@ MAX_CONCURRENT_TRADES = 5
 
 def main():
     print("=" * 125)
-    print(f"{'REAL HISTORICAL DATA BENCHMARK (FULL NSE F&O UNIVERSE)':^125}")
+    print(f"{'REAL 60-DAY 15-MIN INTRADAY BENCHMARK (FULL NSE F&O UNIVERSE)':^125}")
     print("=" * 125)
 
     provider = YahooFinanceProvider()
 
-    # 3-year lookback period
-    end_dt = datetime.now() - timedelta(days=1)
-    start_dt = end_dt - timedelta(days=3 * 365)
+    # 60-day lookback period for 15-minute intraday data
+    end_dt = datetime.now()
+    start_dt = end_dt - timedelta(days=59)
     start_date = start_dt.strftime("%Y-%m-%d")
     end_date = end_dt.strftime("%Y-%m-%d")
 
-    print(f"Fetch Period: {start_date} to {end_date}")
+    print(f"Fetch Period: {start_date} to {end_date} (Interval: 15m)")
     print(f"Target Universe: {len(FULL_FNO_UNIVERSE)} F&O equities")
     print(f"Starting Capital: ₹{STARTING_CAPITAL:,.2f} | Max Concurrent Trades: {MAX_CONCURRENT_TRADES}\n")
 
@@ -50,17 +53,18 @@ def main():
         OISwingStrategy(),
         RelativeStrengthVWAPReversionStrategy(vwap_dist_threshold=0.01),
         CompositeHolyGrailStrategy(),
+        AVPCAfternoonStrategy(),
     ]
 
     # Data collection for Full Universe
     stock_dfs = {}
     successful_downloads = 0
 
-    print("Fetching historical market data for Full F&O universe...")
+    print("Fetching 15m intraday market data for Full F&O universe...")
     for symbol in FULL_FNO_UNIVERSE:
         try:
-            df = provider.fetch_historical_data(
-                symbol=symbol, start_date=start_date, end_date=end_date
+            df = provider.fetch_data(
+                symbol=symbol, start_date=start_date, end_date=end_date, interval="15m"
             )
             if df is not None and not df.empty:
                 stock_dfs[symbol] = df
@@ -75,6 +79,7 @@ def main():
 
     # Aggregated results per strategy
     strategy_results = {}
+    lookback_years = 60.0 / 365.0
 
     for strat in strategies:
         strat_name = strat.name
@@ -111,7 +116,7 @@ def main():
         roi_pct = ((ending_capital - STARTING_CAPITAL) / STARTING_CAPITAL) * 100.0
 
         if ending_capital > 0:
-            cagr_pct = (((ending_capital / STARTING_CAPITAL) ** (1.0 / 3.0)) - 1.0) * 100.0
+            cagr_pct = (((ending_capital / STARTING_CAPITAL) ** (1.0 / lookback_years)) - 1.0) * 100.0
         else:
             cagr_pct = -100.0
 
@@ -131,7 +136,7 @@ def main():
 
     # Print ASCII summary table
     print("=" * 125)
-    print(f"{'FULL NSE F&O UNIVERSE FINANCIAL BENCHMARK RESULTS':^125}")
+    print(f"{'FULL NSE F&O UNIVERSE 60-DAY 15M INTRADAY BENCHMARK RESULTS':^125}")
     print("=" * 125)
     header = (
         f"{'Strategy Name':<38} | {'Start Cap (₹)':<14} | {'End Cap (₹)':<15} | "

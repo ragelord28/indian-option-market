@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Realistic Portfolio Financial Benchmarking Complete
-- **Status**: Phases 1–9.5 Complete. Enforced 5-trade max margin concurrency limit and ₹10.0 Lakhs starting capital across full NSE F&O universe. `ORBMomentumStrategy` generated **+268.2% ROI** (**+54.4% CAGR**, ending capital ₹36.81L, Max DD 10.4%, 64.3% Win Rate across 493 trades) over 3-year backtest. All 33 unit tests passing.
+- **Active Phase**: Phase 10 Intraday Strategies & 60-Day 15m Benchmark Complete
+- **Status**: Phases 1–10 Complete. Implemented DeepSeek ATR 1.25 tweak for ORB Momentum and added `AVPCAfternoonStrategy` (Anchored VWAP Continuation). Executed 60-day 15-minute intraday benchmark across full NSE F&O universe under 5-trade margin limits. `AVPCAfternoonStrategy` generated **+164.1% ROI** (ending capital ₹26.41L, 71.4% Win Rate, Max DD 7.9%) over 60 days. All 34 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
@@ -28,6 +28,7 @@
 - [x] **Phase 8.5**: Composite "Holy Grail" Multi-Factor Upgrade (`src/strategies/composite_holy_grail.py`)
 - [x] **Phase 9**: Full NSE F&O Universe Real Data Benchmark (`src/scanner/universe.py`, `run_real_benchmark.py`)
 - [x] **Phase 9.5**: Red Team Remediation & Honest Benchmark (`src/backtester/engine.py`, `src/backtester/benchmark.py`)
+- [x] **Phase 10**: Intraday Strategies & 60-Day 15m Benchmark (`src/strategies/avpc_afternoon.py`, `run_real_benchmark.py`)
 
 ## Next Immediate Steps
 1. Upstox API live data integration (`UpstoxProvider`).
