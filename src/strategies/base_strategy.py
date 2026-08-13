@@ -45,8 +45,7 @@ class BaseStrategy(ABC):
     """
     Abstract Base Class for all Strategy Engine modules.
 
-    All strategy implementations (e.g. SMACrossoverStrategy) must inherit from this
-    class and implement `generate_signals`.
+    All strategy implementations must inherit from this class and implement `generate_signals`.
     """
 
     def __init__(self, name: str = "BaseStrategy"):
@@ -57,22 +56,41 @@ class BaseStrategy(ABC):
         """
         Baseline Rule 8 Quality Filter (per Core.md Rule 8 & Quant_Rules.md).
 
-        Suppresses low-quality or noisy trade signals.
-        Rejects any signal with confidence < 0.60.
+        Evaluates signal confidence. If composite_factors dictionary is present in
+        signal.metadata, dynamically aggregates multi-factor confidence weights:
+        - Base Score: 0.50
+        - daily_adx_gt_20: +0.10
+        - rsi_15m_divergence: +0.15
+        - vwap_5m_reversion: +0.15
+        - vol_15m_surge: +0.10
+        - oi_surge: +0.10
+        Capped at 0.99 max confidence. Rejects signals with final confidence < 0.60.
 
         Args:
             signal: The candidate Signal instance to evaluate.
 
         Returns:
-            True if the signal passes Rule 8 quality filtering, False if suppressed.
+            True if signal passes Rule 8 quality filtering (confidence >= 0.60), False if suppressed.
         """
         if signal is None:
             return False
 
-        if signal.confidence < 0.60:
-            return False
+        if signal.metadata and "composite_factors" in signal.metadata:
+            base_score = 0.50
+            factors = signal.metadata["composite_factors"]
+            if factors.get("daily_adx_gt_20"):
+                base_score += 0.10
+            if factors.get("rsi_15m_divergence"):
+                base_score += 0.15
+            if factors.get("vwap_5m_reversion"):
+                base_score += 0.15
+            if factors.get("vol_15m_surge"):
+                base_score += 0.10
+            if factors.get("oi_surge"):
+                base_score += 0.10
+            signal.confidence = min(base_score, 0.99)
 
-        return True
+        return signal.confidence >= 0.60
 
     @abstractmethod
     def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
