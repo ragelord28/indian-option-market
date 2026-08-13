@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 7 Strategy Enhancement & Benchmarking Complete
-- **Status**: Phases 1–7 Complete. Applied research enhancements to all 4 strategy modules (2.0x volume + 14-period ATR expansion for ORB, 20 SMA std dev trend bounds for Hedged Vol, 5% cumulative OI buildup for OI Swing, and Nifty 50 macro trend filter for RS+VWAP Reversion). Built `run_benchmark()` matrix. All 31 unit tests passing.
+- **Active Phase**: Phase 8.5 Composite "Holy Grail" Strategy Upgrade Complete
+- **Status**: Phases 1–8.5 Complete. Upgraded `filter_signal_rule_8` with dynamic multi-factor scoring (base 0.50 score + ADX + RSI + VWAP + Volume + OI weighted factors). Built `CompositeHolyGrailStrategy`. All 33 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
@@ -25,6 +25,7 @@
 - [x] **Phase 5**: Audit Logging & Orchestrator Checkpoint (`src/audit_log/`, `src/orchestrator/`, `AuditLogger`, `PipelineRunner`, `tests/test_audit_log.py`)
 - [x] **Phase 6**: Strategy Engineering (`src/strategies/`, ORB, Hedged Vol Premium, OI Swing, RS+VWAP Reversion)
 - [x] **Phase 7**: Strategy Enhancement & Benchmarking (`src/strategies/`, `src/backtester/benchmark.py`)
+- [x] **Phase 8.5**: Composite "Holy Grail" Multi-Factor Upgrade (`src/strategies/composite_holy_grail.py`)
 
 ## Next Immediate Steps
 1. Upstox API live data integration (`UpstoxProvider`).
