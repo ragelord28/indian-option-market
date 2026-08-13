@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 8.5 Composite "Holy Grail" Strategy Upgrade Complete
-- **Status**: Phases 1–8.5 Complete. Upgraded `filter_signal_rule_8` with dynamic multi-factor scoring (base 0.50 score + ADX + RSI + VWAP + Volume + OI weighted factors). Built `CompositeHolyGrailStrategy`. All 33 unit tests passing.
+- **Active Phase**: Phase 9 Real Data Benchmarking & Agent 1.5 Architecture Upgrade Complete
+- **Status**: Phases 1–9 Complete. Added Agent 1.5 (9:30 AM Radar) to Architecture.md, defined Top 50 F&O stock universe, and executed 3-year historical benchmark across all 50 stocks for all 5 strategies. All 33 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
@@ -26,6 +26,7 @@
 - [x] **Phase 6**: Strategy Engineering (`src/strategies/`, ORB, Hedged Vol Premium, OI Swing, RS+VWAP Reversion)
 - [x] **Phase 7**: Strategy Enhancement & Benchmarking (`src/strategies/`, `src/backtester/benchmark.py`)
 - [x] **Phase 8.5**: Composite "Holy Grail" Multi-Factor Upgrade (`src/strategies/composite_holy_grail.py`)
+- [x] **Phase 9**: Real Data Benchmarking & Agent 1.5 Radar Architecture (`src/scanner/universe.py`, `run_real_benchmark.py`)
 
 ## Next Immediate Steps
 1. Upstox API live data integration (`UpstoxProvider`).
