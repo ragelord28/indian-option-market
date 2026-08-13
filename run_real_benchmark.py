@@ -1,17 +1,18 @@
 """
-Real Historical Data Benchmark Runner across Top 50 F&O Stocks.
+Real Historical Data Benchmark Runner across Full NSE F&O Universe.
 
-Phase 9 execution: Downloads 3 years of historical daily market data via YahooFinanceProvider
-for the TOP_50_FNO universe, runs all 5 strategy modules through BacktestEngine,
+Phase 9 expansion: Downloads 3 years of historical daily market data via YahooFinanceProvider
+for the FULL_FNO_UNIVERSE (~160+ stocks), runs all 5 strategy modules through BacktestEngine,
 aggregates cross-portfolio metrics (Total Trades, Win Rate %, Total PnL, Max Drawdown),
 and outputs a formatted ASCII comparison table.
 """
 
 from datetime import datetime, timedelta
+import time
 import pandas as pd
 import numpy as np
 
-from src.scanner.universe import TOP_50_FNO
+from src.scanner.universe import FULL_FNO_UNIVERSE
 from src.data.yahoo_provider import YahooFinanceProvider
 from src.strategies.orb_momentum import ORBMomentumStrategy
 from src.strategies.hedged_vol_premium import HedgedVolPremiumStrategy
@@ -24,7 +25,7 @@ from src.backtester.benchmark import calculate_max_drawdown
 
 def main():
     print("=" * 95)
-    print(f"{'PHASE 9: REAL HISTORICAL DATA BENCHMARK (TOP 50 F&O UNIVERSE)':^95}")
+    print(f"{'REAL HISTORICAL DATA BENCHMARK (FULL NSE F&O UNIVERSE)':^95}")
     print("=" * 95)
 
     provider = YahooFinanceProvider()
@@ -36,7 +37,7 @@ def main():
     end_date = end_dt.strftime("%Y-%m-%d")
 
     print(f"Fetch Period: {start_date} to {end_date}")
-    print(f"Target Universe: {len(TOP_50_FNO)} liquid FnO equities\n")
+    print(f"Target Universe: {len(FULL_FNO_UNIVERSE)} F&O equities\n")
 
     # Instantiate strategies
     strategies = [
@@ -47,12 +48,12 @@ def main():
         CompositeHolyGrailStrategy(),
     ]
 
-    # Data collection for Top 50 universe
+    # Data collection for Full Universe
     stock_dfs = {}
     successful_downloads = 0
 
-    print("Fetching historical market data for Top 50 F&O stocks...")
-    for symbol in TOP_50_FNO:
+    print("Fetching historical market data for Full F&O universe...")
+    for symbol in FULL_FNO_UNIVERSE:
         try:
             df = provider.fetch_historical_data(
                 symbol=symbol, start_date=start_date, end_date=end_date
@@ -62,8 +63,11 @@ def main():
                 successful_downloads += 1
         except Exception as e:
             print(f"  [WARN] Failed to fetch data for {symbol}: {e}")
+        time.sleep(0.1)  # Rate limiting safety delay
 
-    print(f"Data ingestion complete. Successfully loaded {successful_downloads}/{len(TOP_50_FNO)} stocks.\n")
+    print(
+        f"\nData ingestion complete. Successfully loaded {successful_downloads}/{len(FULL_FNO_UNIVERSE)} stocks.\n"
+    )
 
     # Aggregated results per strategy
     strategy_results = {}
@@ -99,7 +103,7 @@ def main():
 
     # Print ASCII summary table
     print("=" * 95)
-    print(f"{'REAL HISTORICAL DATA BENCHMARK RESULTS (AGGREGATED TOP 50 F&O)':^95}")
+    print(f"{'FULL NSE F&O UNIVERSE HISTORICAL BENCHMARK RESULTS':^95}")
     print("=" * 95)
     header = f"{'Strategy Name':<42} | {'Trades':<8} | {'Win Rate':<10} | {'Total PnL (₹)':<14} | {'Max DD (₹)':<12}"
     print(header)
