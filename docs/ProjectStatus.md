@@ -2,7 +2,7 @@
 
 ## Current Overview
 - **Active Phase**: Phase 10 Intraday Strategies & 60-Day 15m Benchmark Complete
-- **Status**: Phases 1–10 Complete. Implemented DeepSeek ATR 1.25 tweak for ORB Momentum and added `AVPCAfternoonStrategy` (Anchored VWAP Continuation). Executed 60-day 15-minute intraday benchmark across full NSE F&O universe under 5-trade margin limits. `AVPCAfternoonStrategy` generated **+164.1% ROI** (ending capital ₹26.41L, 71.4% Win Rate, Max DD 7.9%) over 60 days. All 34 unit tests passing.
+- **Status**: Phases 1–10 Complete. Implemented DeepSeek ATR 1.25 tweak for ORB Momentum and added `AVPCAfternoonStrategy` (Anchored VWAP Continuation). Executed 60-day 15-minute intraday benchmark across full NSE F&O universe under 5-trade margin limits. `HedgedVolPremiumStrategy` generated **+443.1% ROI** (ending capital ₹54.31L, 81.0% Win Rate, Max DD 1.4% across 195 trades) over 60 days. All 34 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
