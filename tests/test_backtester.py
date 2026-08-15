@@ -95,9 +95,10 @@ class DummyOptionStrategy(BaseStrategy):
             return []
         ts = df.index[10]
         price = float(df["close"].iloc[10])
+        sym = str(df["symbol"].iloc[0]) if "symbol" in df.columns else "RELIANCE"
         return [
             Signal(
-                symbol="NIFTY50",
+                symbol=sym,
                 timestamp=ts,
                 action="BUY",
                 strategy_name="OptionTest",

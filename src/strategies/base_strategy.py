@@ -90,7 +90,7 @@ class BaseStrategy(ABC):
                 base_score += 0.10
             signal.confidence = min(base_score, 0.99)
 
-        return signal.confidence >= 0.60
+        return float(signal.confidence) >= 0.60
 
     @abstractmethod
     def generate_signals(self, df: pd.DataFrame) -> List[Signal]:

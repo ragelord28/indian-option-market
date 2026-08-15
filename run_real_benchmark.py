@@ -1,9 +1,9 @@
 """
 Real Historical Intraday Data Benchmark Runner across Full NSE F&O Universe.
 
-Phase 10: Downloads 60 days of 15-minute intraday market data via YahooFinanceProvider
-for the FULL_FNO_UNIVERSE (~160+ stocks), runs all 6 strategy modules through BacktestEngine,
-enforces portfolio capital constraints (₹10 Lakhs starting capital, 5 max concurrent margin trades),
+Phase 9.9 Engine Rebuild: Downloads 60 days of 15-minute intraday market data via YahooFinanceProvider
+for the FULL_FNO_UNIVERSE (~160+ stocks), passes all stock DataFrames in bulk to PortfolioEngine,
+enforces single-pass chronological portfolio margin tracking (₹10 Lakhs starting capital, 5 max concurrent trades),
 calculates full financial metrics (Ending Capital, ROI %, CAGR %, Max Drawdown %, Win Rate %, Total Trades),
 and outputs a formatted ASCII benchmark comparison table.
 """
@@ -21,7 +21,7 @@ from src.strategies.oi_swing import OISwingStrategy
 from src.strategies.custom_research_strategy import RelativeStrengthVWAPReversionStrategy
 from src.strategies.composite_holy_grail import CompositeHolyGrailStrategy
 from src.strategies.avpc_afternoon import AVPCAfternoonStrategy
-from src.backtester.engine import BacktestEngine
+from src.backtester.engine import PortfolioEngine
 from src.backtester.benchmark import calculate_max_drawdown_pct
 
 
@@ -31,7 +31,7 @@ MAX_CONCURRENT_TRADES = 5
 
 def main():
     print("=" * 125)
-    print(f"{'REAL 60-DAY 15-MIN INTRADAY BENCHMARK (FULL NSE F&O UNIVERSE)':^125}")
+    print(f"{'REAL 60-DAY 15-MIN INTRADAY PORTFOLIO BENCHMARK (FULL NSE F&O UNIVERSE)':^125}")
     print("=" * 125)
 
     provider = YahooFinanceProvider()
@@ -83,36 +83,21 @@ def main():
 
     for strat in strategies:
         strat_name = strat.name
-        candidate_trades = []
+        engine = PortfolioEngine(
+            strategy=strat,
+            initial_capital=STARTING_CAPITAL,
+            max_concurrent_trades=MAX_CONCURRENT_TRADES,
+            lot_size=50,
+        )
+        res = engine.run(stock_dfs)
 
-        for symbol, df in stock_dfs.items():
-            engine = BacktestEngine(
-                strategy=strat,
-                initial_capital=STARTING_CAPITAL,
-                max_concurrent_trades=MAX_CONCURRENT_TRADES,
-            )
-            res = engine.run(df)
-            candidate_trades.extend(res["trades"])
+        metrics = res["metrics"]
+        portfolio_trades = res["trades"]
 
-        # Sort candidate trades chronologically by entry_time
-        candidate_trades.sort(key=lambda t: t.entry_time)
+        total_trades = metrics["total_trades"]
+        win_rate_pct = f"{metrics['win_rate'] * 100:.1f}%"
+        ending_capital = metrics["final_capital"]
 
-        # Portfolio-level max concurrent trades filter
-        portfolio_trades = []
-        for t in candidate_trades:
-            active_count = sum(
-                1 for pt in portfolio_trades if pt.entry_time <= t.entry_time < pt.exit_time
-            )
-            if active_count < MAX_CONCURRENT_TRADES:
-                portfolio_trades.append(t)
-
-        total_trades = len(portfolio_trades)
-        winning_trades = sum(1 for t in portfolio_trades if t.pnl > 0)
-        win_rate = (winning_trades / total_trades) if total_trades > 0 else 0.0
-        win_rate_pct = f"{win_rate * 100:.1f}%"
-
-        total_pnl = sum(t.pnl for t in portfolio_trades)
-        ending_capital = round(STARTING_CAPITAL + total_pnl, 2)
         roi_pct = ((ending_capital - STARTING_CAPITAL) / STARTING_CAPITAL) * 100.0
 
         if ending_capital > 0:
@@ -136,7 +121,7 @@ def main():
 
     # Print ASCII summary table
     print("=" * 125)
-    print(f"{'FULL NSE F&O UNIVERSE 60-DAY 15M INTRADAY BENCHMARK RESULTS':^125}")
+    print(f"{'FULL NSE F&O UNIVERSE 60-DAY 15M INTRADAY PORTFOLIO BENCHMARK RESULTS':^125}")
     print("=" * 125)
     header = (
         f"{'Strategy Name':<38} | {'Start Cap (₹)':<14} | {'End Cap (₹)':<15} | "

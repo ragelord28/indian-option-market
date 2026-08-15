@@ -1,78 +1,268 @@
 """
-Backtest Engine for offline strategy simulation.
+Portfolio Engine for offline multi-asset strategy simulation.
 
-Feeds historical ADR-005 market data to Strategy Engine modules, integrates
-RiskManager for position sizing and stop-loss/target exit simulation, and calculates
-performance metrics (Win Rate, Total PnL, Final Capital).
+Implements Phase 9.9 Red Team Remediation:
+- Chronological global signal execution across multi-asset portfolios.
+- PortfolioLedger for cash, blocked margin, and free capital tracking.
+- Calendar day DTE decay math: elapsed_days = (exit_time - entry_time).total_seconds() / 86400.0.
+- Implied volatility sigma extraction from signals and historical bar hv_20.
+- Delta strike solver for ATM / OTM option contracts.
+- Variable transaction cost model: 50.0 + 0.0010 * trade_turnover.
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 import pandas as pd
+import numpy as np
 
 from src.strategies.base_strategy import BaseStrategy, Signal
 from src.backtester.trade import Trade
-from src.backtester.synthetic_options import calculate_option_price
+from src.backtester.synthetic_options import calculate_option_price, find_strike_for_delta
 from src.risk.risk_manager import RiskManager
 
 
-def _get_sigma(row: pd.Series) -> float:
-    """Extract hv_20 volatility or fallback to default 0.20."""
-    val = row.get("hv_20") if "hv_20" in row.index else None
-    if val is None or pd.isna(val) or val <= 0:
-        return 0.20
-    return float(val)
+def _get_sigma(row: pd.Series, metadata: Optional[Dict[str, Any]] = None) -> float:
+    """Extract hv_20 volatility from metadata or row, fallback to 0.20."""
+    if metadata and "hv_20" in metadata and metadata["hv_20"] is not None:
+        val = metadata["hv_20"]
+        if not pd.isna(val) and float(val) > 0:
+            return float(val)
+    if "hv_20" in row.index and not pd.isna(row["hv_20"]) and float(row["hv_20"]) > 0:
+        return float(row["hv_20"])
+    return 0.20
 
 
-class BacktestEngine:
+class PortfolioEngine:
     """
-    Simulates strategy execution against historical market data DataFrames with risk management.
+    Simulates portfolio strategy execution across multi-asset historical DataFrames
+    with chronological margin tracking, calendar day option pricing, and risk management.
     """
 
     def __init__(
         self,
         strategy: BaseStrategy,
-        initial_capital: float = 100000.0,
+        initial_capital: float = 1000000.0,
         risk_manager: Optional[RiskManager] = None,
         max_concurrent_trades: int = 5,
+        lot_size: int = 50,
     ):
         """
-        Initialize the BacktestEngine.
+        Initialize the PortfolioEngine.
 
         Args:
             strategy: Concrete strategy instance (subclass of BaseStrategy).
-            initial_capital: Starting portfolio capital balance (default 100,000.0).
-            risk_manager: Optional RiskManager instance. If None, default RiskManager is created.
-            max_concurrent_trades: Maximum allowed open positions at any bar (default 5).
+            initial_capital: Starting portfolio cash balance (default 1,000,000.0).
+            risk_manager: Optional RiskManager instance.
+            max_concurrent_trades: Maximum allowed concurrent open positions (default 5).
+            lot_size: Standard option lot size multiplier (default 50).
         """
         self.strategy = strategy
-        self.initial_capital = initial_capital
+        self.initial_capital = float(initial_capital)
         self.risk_manager = risk_manager or RiskManager(account_capital=initial_capital)
         self.max_concurrent_trades = max_concurrent_trades
+        self.lot_size = lot_size
+
+    def _evaluate_position_exit(
+        self,
+        pos: Dict[str, Any],
+        df: pd.DataFrame,
+        current_time: pd.Timestamp,
+        force_close: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Evaluate if an open position meets exit criteria up to current_time.
+        """
+        symbol = pos["symbol"]
+        entry_time = pos["entry_time"]
+        entry_idx = pos["entry_idx"]
+        entry_price_or_premium = pos["entry_price_or_premium"]
+        stop_loss = pos["stop_loss"]
+        target_price = pos["target_price"]
+        is_bullish = pos["is_bullish"]
+        is_option = pos["is_option"]
+        opt_type = pos.get("option_type", "c")
+        strike = pos.get("strike", pos["entry_spot"])
+        quantity = pos["quantity"]
+        action = pos["action"]
+
+        timestamps = list(df.index)
+        sub_indices = [
+            i for i, ts in enumerate(timestamps) if entry_time < ts <= current_time
+        ]
+
+        if not sub_indices and not force_close:
+            return None
+
+        exit_found = False
+        exit_time = current_time
+        exit_bar_idx = sub_indices[-1] if sub_indices else entry_idx
+        trigger_price = float(df.iloc[exit_bar_idx]["close"])
+
+        for i in sub_indices:
+            bar = df.iloc[i]
+            bar_time = bar.name
+            low = float(bar["low"])
+            high = float(bar["high"])
+
+            # Check price targets / stops
+            if is_bullish:
+                if low <= stop_loss:
+                    trigger_price = stop_loss
+                    exit_time = bar_time
+                    exit_bar_idx = i
+                    exit_found = True
+                    break
+                elif high >= target_price:
+                    trigger_price = target_price
+                    exit_time = bar_time
+                    exit_bar_idx = i
+                    exit_found = True
+                    break
+            else:
+                if high >= stop_loss:
+                    trigger_price = stop_loss
+                    exit_time = bar_time
+                    exit_bar_idx = i
+                    exit_found = True
+                    break
+                elif low <= target_price:
+                    trigger_price = target_price
+                    exit_time = bar_time
+                    exit_bar_idx = i
+                    exit_found = True
+                    break
+
+            # Calendar day DTE expiration check (30 days max for options / stocks)
+            elapsed_days = (bar_time - entry_time).total_seconds() / 86400.0
+            if elapsed_days >= 30.0:
+                trigger_price = float(bar["close"])
+                exit_time = bar_time
+                exit_bar_idx = i
+                exit_found = True
+                break
+
+        if not exit_found:
+            if force_close:
+                exit_bar_idx = sub_indices[-1] if sub_indices else (len(df) - 1)
+                final_bar = df.iloc[exit_bar_idx]
+                trigger_price = float(final_bar["close"])
+                exit_time = final_bar.name
+                exit_found = True
+            else:
+                return None
+
+        # Pricing exit
+        exit_bar = df.iloc[exit_bar_idx]
+        elapsed_days = (exit_time - entry_time).total_seconds() / 86400.0
+
+        if is_option:
+            dte = max(30.0 - elapsed_days, 0.0)
+            exit_sigma = _get_sigma(exit_bar, pos.get("metadata"))
+            exit_premium = calculate_option_price(
+                opt_type, S=trigger_price, K=strike, days_to_expiry=dte, sigma=exit_sigma
+            )
+            exit_price_or_premium = round(exit_premium, 2)
+
+            if action == "SELL":
+                raw_pnl = (entry_price_or_premium - exit_price_or_premium) * quantity
+                pnl_pct = (
+                    ((entry_price_or_premium - exit_price_or_premium) / entry_price_or_premium) * 100.0
+                    if entry_price_or_premium > 0
+                    else 0.0
+                )
+            else:
+                raw_pnl = (exit_price_or_premium - entry_price_or_premium) * quantity
+                pnl_pct = (
+                    ((exit_price_or_premium - entry_price_or_premium) / entry_price_or_premium) * 100.0
+                    if entry_price_or_premium > 0
+                    else 0.0
+                )
+            trade_type = "OPTION"
+        else:
+            exit_price_or_premium = trigger_price
+            if action == "SELL":
+                raw_pnl = (entry_price_or_premium - exit_price_or_premium) * quantity
+                pnl_pct = (
+                    ((entry_price_or_premium - exit_price_or_premium) / entry_price_or_premium) * 100.0
+                    if entry_price_or_premium > 0
+                    else 0.0
+                )
+            else:
+                raw_pnl = (exit_price_or_premium - entry_price_or_premium) * quantity
+                pnl_pct = (
+                    ((exit_price_or_premium - entry_price_or_premium) / entry_price_or_premium) * 100.0
+                    if entry_price_or_premium > 0
+                    else 0.0
+                )
+            trade_type = "STOCK"
+
+        # Realistic Variable Transaction Costs
+        total_turnover = (entry_price_or_premium + exit_price_or_premium) * quantity
+        total_cost = round(50.0 + (0.0010 * total_turnover), 2)
+        net_pnl = round(raw_pnl - total_cost, 2)
+
+        trade = Trade(
+            symbol=symbol,
+            entry_time=entry_time,
+            exit_time=exit_time,
+            entry_price=round(entry_price_or_premium, 2),
+            exit_price=round(exit_price_or_premium, 2),
+            quantity=quantity,
+            pnl=net_pnl,
+            pnl_percent=round(pnl_pct, 2),
+            trade_type=trade_type,
+            metadata={
+                "strike": strike,
+                "entry_spot": pos["entry_spot"],
+                "trigger_price": trigger_price,
+                "strategy": pos.get("strategy_name"),
+                "confidence": pos.get("confidence"),
+                "transaction_cost": total_cost,
+                "option_type": opt_type,
+            },
+        )
+
+        return {
+            "trade": trade,
+            "margin_released": pos["margin_required"],
+            "net_pnl": net_pnl,
+        }
 
     def run(
-        self, df: pd.DataFrame, signals: Optional[List[Signal]] = None
+        self,
+        stock_dfs: Union[Dict[str, pd.DataFrame], pd.DataFrame],
+        signals: Optional[List[Signal]] = None,
     ) -> Dict[str, Any]:
         """
-        Run backtest simulation on an ADR-005 market data DataFrame.
+        Run portfolio backtest simulation across stock DataFrames with chronological margin tracking.
 
         Args:
-            df: Standardized market data DataFrame.
-            signals: Optional pre-filtered list of Signals. If None, generated via strategy.
+            stock_dfs: Dictionary mapping symbols to market DataFrames, or a single DataFrame.
+            signals: Optional list of Signals. If None, generated via strategy for all stocks.
 
         Returns:
-            Dictionary containing performance metrics and list of executed Trades:
-            {
-                "metrics": {
-                    "total_trades": int,
-                    "winning_trades": int,
-                    "win_rate": float,
-                    "total_pnl": float,
-                    "final_capital": float,
-                },
-                "trades": List[Trade]
-            }
+            Dictionary containing metrics and executed Trade objects.
         """
-        if df is None or df.empty:
+        # Handle single DataFrame input for backward compatibility
+        if isinstance(stock_dfs, pd.DataFrame):
+            if stock_dfs.empty:
+                return {
+                    "metrics": {
+                        "total_trades": 0,
+                        "winning_trades": 0,
+                        "win_rate": 0.0,
+                        "total_pnl": 0.0,
+                        "final_capital": self.initial_capital,
+                    },
+                    "trades": [],
+                }
+            sym = (
+                str(stock_dfs["symbol"].iloc[0])
+                if "symbol" in stock_dfs.columns
+                else "ASSET"
+            )
+            stock_dfs = {sym: stock_dfs}
+
+        if not stock_dfs:
             return {
                 "metrics": {
                     "total_trades": 0,
@@ -84,248 +274,175 @@ class BacktestEngine:
                 "trades": [],
             }
 
-        # 1. Use provided signals or generate & filter signals via Strategy Engine
+        # 1. Gather & Filter Signals across all stocks if not provided
         if signals is None:
-            raw_signals = self.strategy.generate_signals(df)
-            signals = [s for s in raw_signals if self.strategy.filter_signal_rule_8(s)]
+            raw_signals: List[Signal] = []
+            for sym, df in stock_dfs.items():
+                if df is None or df.empty:
+                    continue
+                s_list = self.strategy.generate_signals(df)
+                raw_signals.extend(
+                    [s for s in s_list if self.strategy.filter_signal_rule_8(s)]
+                )
+            signals = raw_signals
 
-        trades: List[Trade] = []
-        timestamps = list(df.index)
+        # Sort ALL signals chronologically by timestamp
+        signals = sorted(signals, key=lambda s: pd.Timestamp(s.timestamp))
 
-        # 2. Simulate trades for each generated signal
+        cash = self.initial_capital
+        open_positions: List[Dict[str, Any]] = []
+        closed_trades: List[Trade] = []
+
+        # 2. Chronological simulation loop
         for signal in signals:
-            if signal.timestamp not in df.index:
+            symbol = signal.symbol
+            if symbol not in stock_dfs or stock_dfs[symbol].empty:
                 continue
 
-            entry_idx = timestamps.index(signal.timestamp)
+            df = stock_dfs[symbol]
+            sig_time = pd.Timestamp(signal.timestamp)
+            if sig_time not in df.index:
+                continue
+
+            timestamps = list(df.index)
+            entry_idx = timestamps.index(sig_time)
             entry_row = df.iloc[entry_idx]
             entry_spot = float(entry_row["close"])
-            entry_time = entry_row.name
-
-            # Enforce max_concurrent_trades open position limit
-            if self.max_concurrent_trades is not None and self.max_concurrent_trades > 0:
-                active_trades_count = sum(
-                    1 for t in trades if t.entry_time <= entry_time < t.exit_time
-                )
-                if active_trades_count >= self.max_concurrent_trades:
-                    continue
-
-            entry_price = float(signal.entry_price) if signal.entry_price else entry_spot
             action = signal.action.upper()
 
-            # Ensure stop_loss and target_price are populated via RiskManager
-            if signal.stop_loss is None or signal.target_price is None:
-                stop_loss, target_price = self.risk_manager.calculate_stop_and_target(
-                    entry_price, action
+            # A. Mark-to-market and exit open positions whose exit criteria are met prior to/at sig_time
+            still_open: List[Dict[str, Any]] = []
+            for pos in open_positions:
+                pos_df = stock_dfs[pos["symbol"]]
+                res = self._evaluate_position_exit(
+                    pos, pos_df, sig_time, force_close=False
                 )
-                signal.stop_loss = stop_loss
-                signal.target_price = target_price
-            else:
-                stop_loss = float(signal.stop_loss)
-                target_price = float(signal.target_price)
+                if res is not None:
+                    cash += res["margin_released"] + res["net_pnl"]
+                    closed_trades.append(res["trade"])
+                else:
+                    still_open.append(pos)
+            open_positions = still_open
 
-            # 1. Directional Mapping: is_bullish = target_price > entry_spot
-            is_bullish = target_price > entry_spot
+            # B. Check max_concurrent_trades limit
+            if len(open_positions) >= self.max_concurrent_trades:
+                continue
 
-            # Check if signal specifies an option trade
-            if signal.metadata.get("type") == "OPTION":
-                strike = entry_spot
+            # C. Sizing and Margin calculation
+            sigma = _get_sigma(entry_row, signal.metadata)
+            entry_price = (
+                float(signal.entry_price) if signal.entry_price else entry_spot
+            )
+
+            is_option = signal.metadata.get("type") == "OPTION"
+            if is_option:
                 opt_type = signal.metadata.get("option_type", "c")
-                entry_sigma = _get_sigma(entry_row)
+                target_delta = signal.metadata.get("delta_target")
+                strike = find_strike_for_delta(
+                    opt_type, entry_spot, target_delta, days_to_expiry=30.0, sigma=sigma
+                )
 
-                # 2. Option Sizing based on option premium risk
+                if signal.stop_loss is None or signal.target_price is None:
+                    stop_loss, target_price = (
+                        self.risk_manager.calculate_stop_and_target(entry_price, action)
+                    )
+                else:
+                    stop_loss = float(signal.stop_loss)
+                    target_price = float(signal.target_price)
+
+                is_bullish = target_price > entry_spot
+
                 entry_premium = calculate_option_price(
-                    opt_type, S=entry_spot, K=strike, days_to_expiry=30.0, sigma=entry_sigma
+                    opt_type, S=entry_spot, K=strike, days_to_expiry=30.0, sigma=sigma
                 )
                 stop_premium = calculate_option_price(
-                    opt_type, S=stop_loss, K=strike, days_to_expiry=30.0, sigma=entry_sigma
+                    opt_type, S=stop_loss, K=strike, days_to_expiry=30.0, sigma=sigma
                 )
 
                 quantity = self.risk_manager.calculate_position_size(
-                    entry_price=entry_premium, stop_loss=stop_premium
+                    entry_price=entry_premium,
+                    stop_loss=stop_premium,
+                    lot_size=self.lot_size,
                 )
-
                 if quantity == 0:
                     continue
 
-                trade_type = "OPTION"
-                exit_time = entry_time
-                trigger_price = entry_spot
-                exit_bar_idx = entry_idx
-
-                # 3. Pessimistic Exits & Expiration / 30-bar holding limit
-                for i in range(entry_idx + 1, len(df)):
-                    bar = df.iloc[i]
-                    low = float(bar["low"])
-                    high = float(bar["high"])
-
-                    if is_bullish:
-                        if low <= stop_loss:
-                            trigger_price = stop_loss
-                            exit_time = bar.name
-                            exit_bar_idx = i
-                            break
-                        elif high >= target_price:
-                            trigger_price = target_price
-                            exit_time = bar.name
-                            exit_bar_idx = i
-                            break
-                    else:
-                        if high >= stop_loss:
-                            trigger_price = stop_loss
-                            exit_time = bar.name
-                            exit_bar_idx = i
-                            break
-                        elif low <= target_price:
-                            trigger_price = target_price
-                            exit_time = bar.name
-                            exit_bar_idx = i
-                            break
-
-                    # Expiration at 30 DTE / bars max
-                    if (i - entry_idx) >= 30:
-                        trigger_price = float(bar["close"])
-                        exit_time = bar.name
-                        exit_bar_idx = i
-                        break
+                if action == "BUY":
+                    margin_required = entry_premium * quantity
                 else:
-                    # Final bar fallback
-                    final_bar = df.iloc[-1]
-                    trigger_price = float(final_bar["close"])
-                    exit_time = final_bar.name
-                    exit_bar_idx = len(df) - 1
+                    margin_required = (0.20 * entry_spot) * quantity
 
-                # 4. Accurate Option Exit Pricing using trigger_price & actual bar sigma
-                exit_bar = df.iloc[exit_bar_idx]
-                exit_sigma = _get_sigma(exit_bar)
-                dte = max(30.0 - (exit_bar_idx - entry_idx), 1.0)
-                exit_premium = calculate_option_price(
-                    opt_type, S=trigger_price, K=strike, days_to_expiry=dte, sigma=exit_sigma
-                )
-                exit_price = round(exit_premium, 2)
-
-                # 5. Fix Option SELL PnL & 6. Transaction Costs (-₹50)
-                if action == "SELL":
-                    raw_pnl = (entry_premium - exit_premium) * quantity
-                    pnl_pct = (
-                        ((entry_premium - exit_premium) / entry_premium) * 100.0
-                        if entry_premium > 0
-                        else 0.0
-                    )
-                else:
-                    raw_pnl = (exit_premium - entry_premium) * quantity
-                    pnl_pct = (
-                        ((exit_premium - entry_premium) / entry_premium) * 100.0
-                        if entry_premium > 0
-                        else 0.0
-                    )
-
-                pnl = round(raw_pnl - 50.0, 2)
-                pnl_percent = round(pnl_pct, 2)
-
-                trade = Trade(
-                    symbol=signal.symbol,
-                    entry_time=entry_time,
-                    exit_time=exit_time,
-                    entry_price=round(entry_premium, 2),
-                    exit_price=exit_price,
-                    quantity=quantity,
-                    pnl=pnl,
-                    pnl_percent=pnl_percent,
-                    trade_type=trade_type,
-                    metadata={
-                        "strike": strike,
-                        "entry_spot": entry_spot,
-                        "option_type": opt_type,
-                        "strategy": signal.strategy_name,
-                        "confidence": signal.confidence,
-                    },
-                )
+                entry_price_or_premium = entry_premium
+                trade_lot_size = self.lot_size
             else:
-                # Standard Stock Trade
-                quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss)
+                if signal.stop_loss is None or signal.target_price is None:
+                    stop_loss, target_price = (
+                        self.risk_manager.calculate_stop_and_target(entry_price, action)
+                    )
+                else:
+                    stop_loss = float(signal.stop_loss)
+                    target_price = float(signal.target_price)
+
+                is_bullish = target_price > entry_spot
+
+                quantity = self.risk_manager.calculate_position_size(
+                    entry_price=entry_price, stop_loss=stop_loss, lot_size=1
+                )
                 if quantity == 0:
                     continue
 
-                exit_time = df.iloc[-1].name
-                trigger_price = float(df.iloc[-1]["close"])
+                margin_required = entry_price * quantity
+                entry_price_or_premium = entry_price
+                trade_lot_size = 1
 
-                # 3. Pessimistic Exits & 30-bar holding limit
-                for i in range(entry_idx + 1, len(df)):
-                    bar = df.iloc[i]
-                    low = float(bar["low"])
-                    high = float(bar["high"])
+            # D. Check free capital constraint
+            if margin_required > cash or margin_required <= 0:
+                continue
 
-                    if is_bullish:
-                        if low <= stop_loss:
-                            trigger_price = stop_loss
-                            exit_time = bar.name
-                            break
-                        elif high >= target_price:
-                            trigger_price = target_price
-                            exit_time = bar.name
-                            break
-                    else:
-                        if high >= stop_loss:
-                            trigger_price = stop_loss
-                            exit_time = bar.name
-                            break
-                        elif low <= target_price:
-                            trigger_price = target_price
-                            exit_time = bar.name
-                            break
+            # Deduct margin from available cash
+            cash -= margin_required
 
-                    # 30-bar max holding limit for stocks
-                    if (i - entry_idx) >= 30:
-                        trigger_price = float(bar["close"])
-                        exit_time = bar.name
-                        break
+            position = {
+                "symbol": symbol,
+                "entry_time": sig_time,
+                "entry_idx": entry_idx,
+                "entry_spot": entry_spot,
+                "entry_price_or_premium": entry_price_or_premium,
+                "stop_loss": stop_loss,
+                "target_price": target_price,
+                "is_bullish": is_bullish,
+                "is_option": is_option,
+                "option_type": signal.metadata.get("option_type", "c"),
+                "strike": strike if is_option else entry_spot,
+                "quantity": quantity,
+                "lot_size": trade_lot_size,
+                "action": action,
+                "margin_required": margin_required,
+                "strategy_name": signal.strategy_name,
+                "confidence": signal.confidence,
+                "metadata": signal.metadata,
+            }
+            open_positions.append(position)
 
-                exit_price = trigger_price
-                if action == "SELL":
-                    raw_pnl = (entry_price - exit_price) * quantity
-                    pnl_pct = (
-                        ((entry_price - exit_price) / entry_price) * 100.0
-                        if entry_price > 0
-                        else 0.0
-                    )
-                else:
-                    raw_pnl = (exit_price - entry_price) * quantity
-                    pnl_pct = (
-                        ((exit_price - entry_price) / entry_price) * 100.0
-                        if entry_price > 0
-                        else 0.0
-                    )
+        # 3. Final force close of any remaining open positions at the end of data
+        for pos in open_positions:
+            pos_df = stock_dfs[pos["symbol"]]
+            last_time = pos_df.index[-1]
+            res = self._evaluate_position_exit(
+                pos, pos_df, last_time, force_close=True
+            )
+            if res is not None:
+                cash += res["margin_released"] + res["net_pnl"]
+                closed_trades.append(res["trade"])
 
-                pnl = round(raw_pnl - 50.0, 2)
-                pnl_percent = round(pnl_pct, 2)
-
-                trade = Trade(
-                    symbol=signal.symbol,
-                    entry_time=entry_time,
-                    exit_time=exit_time,
-                    entry_price=entry_price,
-                    exit_price=exit_price,
-                    quantity=quantity,
-                    pnl=pnl,
-                    pnl_percent=pnl_percent,
-                    trade_type="STOCK",
-                    metadata={
-                        "strategy": signal.strategy_name,
-                        "confidence": signal.confidence,
-                        "stop_loss": stop_loss,
-                        "target_price": target_price,
-                    },
-                )
-
-            trades.append(trade)
-
-        # 3. Calculate summary metrics
-        total_trades = len(trades)
-        winning_trades = sum(1 for t in trades if t.pnl > 0)
-        win_rate = round(winning_trades / total_trades, 4) if total_trades > 0 else 0.0
-        total_pnl = round(sum(t.pnl for t in trades), 2)
-        final_capital = round(self.initial_capital + total_pnl, 2)
+        # 4. Summary metrics
+        total_trades = len(closed_trades)
+        winning_trades = sum(1 for t in closed_trades if t.pnl > 0)
+        win_rate = (
+            round(winning_trades / total_trades, 4) if total_trades > 0 else 0.0
+        )
+        total_pnl = round(sum(t.pnl for t in closed_trades), 2)
+        final_capital = round(cash, 2)
 
         return {
             "metrics": {
@@ -335,5 +452,9 @@ class BacktestEngine:
                 "total_pnl": total_pnl,
                 "final_capital": final_capital,
             },
-            "trades": trades,
+            "trades": closed_trades,
         }
+
+
+# Alias for backward compatibility
+BacktestEngine = PortfolioEngine
