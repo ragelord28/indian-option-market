@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 9.9 PortfolioEngine Rebuild & Portfolio Financial Benchmark Complete
-- **Status**: Phases 1–10 Complete. Successfully executed Phase 9.9 engine rebuild: true single-pass chronological portfolio margin ledger (`PortfolioEngine`), calendar day DTE decay math, delta strike solver, and variable transaction fee model (50.0 + 0.0010 * turnover). Across the 60-day 15m intraday universe, `AVPCAfternoonStrategy` achieved **+241.9% ROI** (ending capital ₹34.18L, 74.5% Win Rate, Max DD 5.8%) and `ORBMomentumStrategy` achieved **+224.2% ROI** (71.2% Win Rate, Max DD 3.8%). All 34 unit tests passing.
+- **Active Phase**: Phase 10 Upstox Live API v2 Adapter & OAuth Manager Complete
+- **Status**: Phases 1–10 Complete. Built `UpstoxProvider` live data provider adapter implementing ADR-005 schema, option chain analytics, and 1-Click OAuth 2.0 Auth Manager (`upstox_auth.py`). Live connectivity verified with 200 OK responses. All 39 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
