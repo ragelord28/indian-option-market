@@ -8,8 +8,10 @@ Features 4 Interactive Modules:
 4. Risk & Audit Trail (Live Capital Allocation & Audit Logs).
 """
 
+from datetime import datetime
 import json
 from pathlib import Path
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -69,7 +71,14 @@ if selected_tab == "📊 D-1 Actionable Watchlist":
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        st.caption(f"**Scan Timestamp**: {data.get('timestamp', 'N/A')} | **Stocks Scanned**: {data.get('total_scanned', 0)}")
+        raw_ts = data.get("timestamp", "")
+        try:
+            dt_obj = datetime.fromisoformat(raw_ts)
+            formatted_date = dt_obj.strftime("%d-%b-%Y %H:%M IST")
+        except Exception:
+            formatted_date = raw_ts or "N/A"
+
+        st.caption(f"**Scan Date**: {formatted_date} | **Stocks Scanned**: {data.get('total_scanned', 0)}")
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -104,6 +113,7 @@ if selected_tab == "📊 D-1 Actionable Watchlist":
                 "delta_target", "entry", "stop_loss", "target", "adx_14", "hv_20"
             ]
             df_display = df_display[[c for c in cols if c in df_display.columns]]
+            df_display.index = range(1, len(df_display) + 1)
             st.dataframe(df_display, use_container_width=True)
 
 # -----------------------------------------------------------------------------
@@ -133,6 +143,7 @@ elif selected_tab == "⚡ Live Option Chain & Greeks":
                 col4.metric("Put IV", f"{atm_row['put_iv']*100:.1f}%")
 
                 st.markdown("### Strike Ladder & Greeks Matrix")
+                chain_df.index = range(1, len(chain_df) + 1)
                 st.dataframe(chain_df, use_container_width=True)
 
                 # Interactive Plotly IV Surface / Strike Curve
@@ -162,6 +173,7 @@ elif selected_tab == "📈 Portfolio & Benchmark Analytics":
         {"Strategy": "AVPCAfternoonStrategy", "Start Cap": 1000000.0, "End Cap": 3418920.80, "ROI %": "+241.9%", "CAGR %": "+712040.1%", "Max DD %": "5.8%", "Win Rate": "74.5%", "Trades": 161},
     ]
     df_bm = pd.DataFrame(benchmark_data)
+    df_bm.index = range(1, len(df_bm) + 1)
 
     st.markdown("### Financial Performance Comparison Matrix")
     st.dataframe(df_bm, use_container_width=True)

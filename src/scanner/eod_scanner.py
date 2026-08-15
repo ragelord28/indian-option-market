@@ -187,18 +187,26 @@ def run_eod_scanner(
         "top_volatility_harvest": top_vol,
     }
 
-    # Save JSON file
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
+    # Save JSON files (latest + dated archive)
     json_path = out_path / "watchlist_latest.json"
+    archive_json_path = out_path / f"watchlist_{today_str}.json"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(watchlist_data, f, indent=2)
+    with open(archive_json_path, "w", encoding="utf-8") as f:
+        json.dump(watchlist_data, f, indent=2)
 
-    # Save Markdown file
+    # Save Markdown files (latest + dated archive)
     md_path = out_path / "watchlist_latest.md"
+    archive_md_path = out_path / f"watchlist_{today_str}.md"
     md_content = generate_markdown_briefing(watchlist_data)
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(md_content)
+    with open(archive_md_path, "w", encoding="utf-8") as f:
+        f.write(md_content)
 
-    print(f"Scanner Complete! Saved watchlist to {json_path} and {md_path}")
+    print(f"Scanner Complete! Saved watchlist to {json_path}, {md_path}, {archive_json_path}, and {archive_md_path}")
     return watchlist_data
 
 

@@ -60,11 +60,18 @@ def test_run_eod_scanner_exports_valid_files(tmp_path):
     assert "top_bearish" in res
     assert "top_volatility_harvest" in res
 
+    from datetime import datetime
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
     json_file = tmp_path / "watchlist_latest.json"
     md_file = tmp_path / "watchlist_latest.md"
+    archive_json_file = tmp_path / f"watchlist_{today_str}.json"
+    archive_md_file = tmp_path / f"watchlist_{today_str}.md"
 
     assert json_file.exists()
     assert md_file.exists()
+    assert archive_json_file.exists()
+    assert archive_md_file.exists()
 
     with open(json_file, "r", encoding="utf-8") as f:
         data = json.load(f)
