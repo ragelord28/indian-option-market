@@ -3,7 +3,7 @@ Quant F&O Command Center — Streamlit UI Dashboard.
 
 Features 4 Interactive Modules:
 1. D-1 Actionable Watchlist (Bullish / Bearish / Volatility Harvest Setups).
-2. Live Option Chain & Greeks Analytics (via UpstoxProvider).
+2. Live Option Chain & Greeks Analytics + Top 3 Strike Recommendation Engine.
 3. Portfolio & Benchmark Analytics (ROI, CAGR, Max Drawdown, Plotly Equity Curves).
 4. Risk & Audit Trail (Live Capital Allocation & Audit Logs).
 """
@@ -17,7 +17,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.data.upstox_provider import UpstoxProvider
+from src.data import UpstoxProvider, calculate_pcr, find_max_pain, rank_strikes
 
 # Page Configuration
 st.set_page_config(
@@ -121,9 +121,14 @@ if selected_tab == "📊 D-1 Actionable Watchlist":
 # -----------------------------------------------------------------------------
 elif selected_tab == "⚡ Live Option Chain & Greeks":
     st.markdown('<p class="main-title">⚡ Live Option Chain & Greeks</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-title">Real-time strike ladder, Greeks (Delta, Theta, Vega), and IV surface from Upstox API v2</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Real-time strike ladder, PCR, Max Pain, and Top 3 Strike Recommendation Engine</p>', unsafe_allow_html=True)
 
-    symbol = st.selectbox("Select Symbol for Live Option Chain:", ["RELIANCE", "NIFTY50", "BANKNIFTY", "INFY", "TCS", "HDFCBANK"])
+    col_sym, col_bias = st.columns([1, 1])
+    with col_sym:
+        symbol = st.selectbox("Select Symbol for Live Option Chain:", ["RELIANCE", "NIFTY50", "BANKNIFTY", "INFY", "TCS", "HDFCBANK"])
+    with col_bias:
+        bias_choice = st.radio("Directional Strategy Bias:", ["BULLISH (Call Options)", "BEARISH (Put Options)"], horizontal=True)
+    bias = "BULLISH" if "BULLISH" in bias_choice else "BEARISH"
 
     if st.button("Fetch Live Option Chain"):
         provider = UpstoxProvider()
@@ -132,21 +137,40 @@ elif selected_tab == "⚡ Live Option Chain & Greeks":
             if chain_df.empty:
                 st.warning(f"No active option chain data returned for {symbol}.")
             else:
-                st.success(f"Loaded {len(chain_df)} option strikes for {symbol}.")
-
-                # Display summary metrics
+                pcr_val = calculate_pcr(chain_df)
+                max_pain_val = find_max_pain(chain_df)
                 atm_row = chain_df.iloc[len(chain_df) // 2]
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Underlying Symbol", symbol)
-                col2.metric("ATM Strike", f"₹{atm_row['strike_price']:,.2f}")
-                col3.metric("Call IV", f"{atm_row['call_iv']*100:.1f}%")
-                col4.metric("Put IV", f"{atm_row['put_iv']*100:.1f}%")
+                spot_price = float(atm_row["strike_price"])
+                total_oi = int(chain_df["call_oi"].sum() + chain_df["put_oi"].sum())
 
-                st.markdown("### Strike Ladder & Greeks Matrix")
+                # Top Summary Metrics Row
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Underlying Spot Price", f"₹{spot_price:,.2f}")
+                m2.metric("Put-Call Ratio (PCR)", f"{pcr_val:.2f}", delta="Bullish Bias" if pcr_val > 1.0 else "Bearish Bias")
+                m3.metric("Max Pain Strike", f"₹{max_pain_val:,.2f}")
+                m4.metric("Total Open Interest", f"{total_oi:,}")
+
+                st.markdown("---")
+
+                # Top 3 Recommended Strikes
+                st.markdown(f"### 🎯 Recommended Top 3 Strikes to Trade ({bias})")
+                top_strikes_df = rank_strikes(chain_df, spot_price=spot_price, bias=bias, lot_size=50)
+                top_strikes_df.index = range(1, len(top_strikes_df) + 1)
+
+                def highlight_rank1(row):
+                    if row["Rank"] == 1:
+                        return ["background-color: #D1FAE5; font-weight: bold;"] * len(row)
+                    return [""] * len(row)
+
+                styled_df = top_strikes_df.style.apply(highlight_rank1, axis=1)
+                st.dataframe(styled_df, use_container_width=True)
+
+                st.markdown("---")
+                st.markdown("### Full Strike Ladder & Greeks Matrix")
                 chain_df.index = range(1, len(chain_df) + 1)
                 st.dataframe(chain_df, use_container_width=True)
 
-                # Interactive Plotly IV Surface / Strike Curve
+                # Interactive Plotly IV Surface
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=chain_df["strike_price"], y=chain_df["call_iv"], mode="lines+markers", name="Call IV"))
                 fig.add_trace(go.Scatter(x=chain_df["strike_price"], y=chain_df["put_iv"], mode="lines+markers", name="Put IV"))
