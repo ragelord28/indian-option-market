@@ -2,8 +2,8 @@
 Quant F&O Command Center — Streamlit UI Dashboard.
 
 Features 4 Interactive Modules:
-1. D-1 Actionable Watchlist (Bullish / Bearish / Volatility Harvest Setups).
-2. Live Option Chain & Greeks Analytics + Single Best Strike Sniper View.
+1. D-1 Actionable Watchlist (Dynamic High-Conviction Setups & VRP).
+2. Live Option Chain & Greeks Analytics + Single Best Strike Sniper View + 09:15 AM Gap Veto Check.
 3. Portfolio & Benchmark Analytics (ROI, CAGR, Max Drawdown, Plotly Equity Curves).
 4. Risk & Audit Trail (Live Capital Allocation & Audit Logs).
 """
@@ -26,10 +26,13 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.data import (
     UpstoxProvider,
     calculate_pcr,
+    interpret_pcr,
+    calculate_vrp,
     find_max_pain,
     rank_strikes,
     get_best_strike,
 )
+from src.scanner.eod_scanner import check_morning_gap_veto
 
 # Page Configuration
 st.set_page_config(
@@ -74,7 +77,7 @@ selected_tab = st.sidebar.radio(
 # -----------------------------------------------------------------------------
 if selected_tab == "📊 D-1 Actionable Watchlist":
     st.markdown('<p class="main-title">📊 D-1 Actionable Watchlist</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-title">Top-ranked pre-market setups from Nightly Scanner (Agent 1)</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Dynamic High-Conviction Setups (Conviction Score ≥ 80)</p>', unsafe_allow_html=True)
 
     json_path = Path("data/watchlists/watchlist_latest.json")
     if not json_path.exists():
@@ -90,7 +93,8 @@ if selected_tab == "📊 D-1 Actionable Watchlist":
         except Exception:
             formatted_date = raw_ts or "N/A"
 
-        st.caption(f"**Scan Date**: {formatted_date} | **Stocks Scanned**: {data.get('total_scanned', 0)}")
+        q_count = data.get("qualifying_count", len(data.get("top_bullish", [])) + len(data.get("top_bearish", [])) + len(data.get("top_volatility_harvest", [])))
+        st.caption(f"**Scan Date**: {formatted_date} | **{q_count} High-Conviction Setups Identified** (Scanned: {data.get('total_scanned', 0)})")
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -117,12 +121,12 @@ if selected_tab == "📊 D-1 Actionable Watchlist":
             items = data.get("top_volatility_harvest", [])
 
         if not items:
-            st.info("No candidates identified for this setup category.")
+            st.info("No candidates qualified for this category (Conviction Score ≥ 80 threshold).")
         else:
             df_display = pd.DataFrame(items)
             cols = [
-                "symbol", "close", "regime", "suggested_action",
-                "delta_target", "entry", "stop_loss", "target", "adx_14", "hv_20"
+                "symbol", "close", "conviction_score", "regime", "suggested_action",
+                "delta_target", "vrp", "entry", "stop_loss", "target", "adx_14", "rsi_14", "hv_20"
             ]
             df_display = df_display[[c for c in cols if c in df_display.columns]]
             df_display.index = range(1, len(df_display) + 1)
@@ -133,7 +137,7 @@ if selected_tab == "📊 D-1 Actionable Watchlist":
 # -----------------------------------------------------------------------------
 elif selected_tab == "⚡ Live Option Chain & Greeks":
     st.markdown('<p class="main-title">⚡ Single Best Strike Sniper View</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-title">Real-time strike sniper recommendation, option target pricing, PCR, and Max Pain analytics</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Real-time strike sniper recommendation, VRP analytics, PCR regime, and 09:15 AM Gap Veto check</p>', unsafe_allow_html=True)
 
     # Load shortlisted symbols & targets from watchlist_latest.json
     json_path = Path("data/watchlists/watchlist_latest.json")
@@ -170,6 +174,26 @@ elif selected_tab == "⚡ Live Option Chain & Greeks":
 
     bias = "BULLISH" if "BULLISH" in bias_choice else "BEARISH"
 
+    st.markdown("---")
+    st.markdown("### 🚦 09:15 AM Morning Opening Gap Veto Check")
+
+    # Retrieve symbol details from watchlist if available
+    item_det = symbol_details_map.get(symbol, {})
+    prev_close_val = float(item_det.get("close", 1000.0))
+    atr_val = float(item_det.get("atr_14", prev_close_val * 0.02))
+
+    gap_col1, gap_col2 = st.columns([1, 2])
+    with gap_col1:
+        open_input = st.number_input("Enter 09:15 AM Open Price (₹):", value=prev_close_val, step=0.5)
+    with gap_col2:
+        is_vetoed, veto_msg = check_morning_gap_veto(open_input, prev_close_val, atr_val)
+        if is_vetoed:
+            st.error(f"🛑 {veto_msg}")
+        else:
+            st.success(f"✅ {veto_msg}")
+
+    st.markdown("---")
+
     if st.button("🔍 Find Best Strike"):
         provider = UpstoxProvider()
         try:
@@ -178,19 +202,19 @@ elif selected_tab == "⚡ Live Option Chain & Greeks":
                 st.warning("No option chain data returned. Market may be closed or token expired.")
             else:
                 pcr_val = calculate_pcr(chain_df)
+                pcr_label, pcr_score = interpret_pcr(pcr_val)
                 max_pain_val = find_max_pain(chain_df)
                 atm_row = chain_df.iloc[len(chain_df) // 2]
                 atm_spot = float(atm_row["strike_price"])
                 total_oi = int(chain_df["call_oi"].sum() + chain_df["put_oi"].sum())
 
+                hv_20_val = float(item_det.get("hv_20", 20.0)) / 100.0 if "hv_20" in item_det else 0.20
+                atm_iv_val = float(atm_row.get("call_iv", 0.20))
+                vrp_pct = calculate_vrp(atm_iv_val, hv_20_val) * 100.0
+
                 # Lookup target & spot from watchlist if available
-                if symbol in symbol_details_map:
-                    item = symbol_details_map[symbol]
-                    spot_price = float(item.get("close", atm_spot))
-                    underlying_target = float(item.get("target", spot_price * (1.02 if bias == "BULLISH" else 0.98)))
-                else:
-                    spot_price = atm_spot
-                    underlying_target = spot_price * (1.02 if bias == "BULLISH" else 0.98)
+                spot_price = float(item_det.get("close", atm_spot))
+                underlying_target = float(item_det.get("target", spot_price * (1.02 if bias == "BULLISH" else 0.98)))
 
                 # Compute Single Best Strike Recommendation
                 best = get_best_strike(
@@ -199,11 +223,14 @@ elif selected_tab == "⚡ Live Option Chain & Greeks":
                     underlying_target=underlying_target,
                     bias=bias,
                     lot_size=50,
+                    hv_20=hv_20_val,
                 )
 
-                st.markdown("---")
-                st.markdown("### 🎯 Single Best Strike Recommendation")
+                # Check liquidity spread warning
+                if best.get("liquidity_warning") or best.get("spread_pct", 0) > 4.0:
+                    st.warning(f"⚠️ Liquidity Warning: Bid-Ask Spread is {best.get('spread_pct', 4.5):.1f}% (> 4.0% limit)! Slippage risk is elevated.")
 
+                st.markdown("### 🎯 Single Best Strike Recommendation")
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Optimal Strike", f"{best['strike']} {best['type']}")
                 c2.metric("Entry Premium (LTP)", f"₹{best['ltp']:.2f}")
@@ -211,16 +238,17 @@ elif selected_tab == "⚡ Live Option Chain & Greeks":
                 c4.metric("Capital Required (1 Lot)", f"₹{best['capital']:,.2f}")
 
                 st.markdown("---")
-                # Top Summary Metrics Row
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Underlying Spot Price", f"₹{spot_price:,.2f}")
-                m2.metric("Put-Call Ratio (PCR)", f"{pcr_val:.2f}", delta="Bullish Bias" if pcr_val > 1.0 else "Bearish Bias")
-                m3.metric("Max Pain Strike", f"₹{max_pain_val:,.2f}")
-                m4.metric("Total Open Interest", f"{total_oi:,}")
+                # Top Summary Metrics Row (including VRP and PCR Regime)
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Spot Price", f"₹{spot_price:,.2f}")
+                m2.metric("PCR Ratio", f"{pcr_val:.2f}", delta=pcr_label)
+                m3.metric("Max Pain", f"₹{max_pain_val:,.2f}")
+                m4.metric("VRP (IV - HV)", f"{vrp_pct:+.1f}%")
+                m5.metric("Total Open Interest", f"{total_oi:,}")
 
                 st.markdown("---")
                 st.markdown("### Top 3 Ranked Option Strikes")
-                top_strikes_df = rank_strikes(chain_df, spot_price=spot_price, bias=bias, lot_size=50)
+                top_strikes_df = rank_strikes(chain_df, spot_price=spot_price, bias=bias, lot_size=50, hv_20=hv_20_val)
                 top_strikes_df.index = range(1, len(top_strikes_df) + 1)
 
                 def highlight_rank1(row):

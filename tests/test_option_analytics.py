@@ -2,7 +2,7 @@
 Unit tests for Option Analytics & Strike Ranking Engine (src/data/option_analytics.py).
 
 Per CodingStandards.md:
-- Tests verify PCR, Max Pain, Top-3 strike recommendation, and single best strike sniper view logic.
+- Tests verify PCR, VRP, Max Pain, Top-3 strike recommendation, and single best strike sniper view logic.
 """
 
 import pandas as pd
@@ -10,6 +10,8 @@ import pytest
 
 from src.data.option_analytics import (
     calculate_pcr,
+    interpret_pcr,
+    calculate_vrp,
     find_max_pain,
     rank_strikes,
     get_best_strike,
@@ -38,6 +40,19 @@ def test_calculate_pcr(mock_option_chain_df: pd.DataFrame):
     assert calculate_pcr(pd.DataFrame()) == 0.0
 
 
+def test_interpret_pcr():
+    """Test PCR regime interpretation."""
+    assert interpret_pcr(1.25) == ("Bullish Support", 1.0)
+    assert interpret_pcr(1.00) == ("Neutral", 0.0)
+    assert interpret_pcr(0.70) == ("Bearish Resistance", -1.0)
+
+
+def test_calculate_vrp():
+    """Test Volatility Risk Premium (IV - HV) calculation."""
+    assert calculate_vrp(0.25, 0.20) == 0.05
+    assert calculate_vrp(25.0, 20.0) == 0.05
+
+
 def test_find_max_pain(mock_option_chain_df: pd.DataFrame):
     """Test Max Pain strike calculation."""
     max_pain = find_max_pain(mock_option_chain_df)
@@ -53,6 +68,7 @@ def test_rank_strikes_bullish(mock_option_chain_df: pd.DataFrame):
     assert top_3["Option Type"].iloc[0] == "CE"
     assert top_3["Strike Price"].iloc[1] == 2500.0  # ATM strike
     assert top_3["Capital per Lot (₹)"].iloc[1] == 45.0 * 50  # 2250.0
+    assert "Liquidity Warning" in top_3.columns
 
 
 def test_rank_strikes_bearish(mock_option_chain_df: pd.DataFrame):
@@ -80,5 +96,6 @@ def test_get_best_strike(mock_option_chain_df: pd.DataFrame):
     assert best_call["type"] == "CE"
     assert best_call["ltp"] == 70.0
     assert best_call["capital"] == 70.0 * 50  # 3500.0
-    # Move = 50, premium gain = 50 * 0.62 = 31.0. Option target = 70 + 31 = 101.0
     assert best_call["option_target_price"] == 101.0
+    assert "vrp" in best_call
+    assert "liquidity_warning" in best_call

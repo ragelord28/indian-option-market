@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 11 D-1 Nightly Scanner & Streamlit Quant Command Center Complete
-- **Status**: Phases 1–11 Complete. Built `src/scanner/eod_scanner.py` (Agent 1) generating pre-market watchlist briefings in JSON and Markdown format (`data/watchlists/`). Built 4-module Streamlit UI Dashboard (`src/ui/dashboard.py`). Verified live functionality and automated tests. All 41 unit tests passing.
+- **Active Phase**: Phase 11.5 Institutional Quant & Risk Engine Upgrades Complete
+- **Status**: Phases 1–11.5 Complete. Upgraded option analytics engine with VRP ($\text{IV} - \text{HV}$) calculations, linear PCR regime classification, and spread liquidity gating (>4% warning). Built dynamic conviction scoring (0-100) and 09:15 AM morning opening gap veto check (`check_morning_gap_veto`). All 49 unit tests passing cleanly.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution

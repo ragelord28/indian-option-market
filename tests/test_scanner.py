@@ -2,8 +2,8 @@
 Unit tests for D-1 Nightly Scanner (src/scanner/eod_scanner.py).
 
 Per CodingStandards.md:
-- Tests verify indicator calculation (ADX, ATR, HV, SMA).
-- Tests verify JSON and Markdown export structure under data/watchlists/.
+- Tests verify indicator calculation (ADX, ATR, HV, EMA, RSI, ROC).
+- Tests verify gap veto logic and watchlist export structure.
 """
 
 import json
@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.scanner.eod_scanner import calculate_indicators, run_eod_scanner
+from src.scanner.eod_scanner import calculate_indicators, run_eod_scanner, check_morning_gap_veto
 
 
 @pytest.fixture
@@ -38,22 +38,37 @@ def mock_daily_df() -> pd.DataFrame:
 
 
 def test_calculate_indicators(mock_daily_df: pd.DataFrame):
-    """Test indicators calculation (sma_20, sma_50, atr_14, adx_14, hv_20)."""
+    """Test indicators calculation (ema_20, ema_50, atr_14, adx_14, rsi_14, roc_12, hv_20)."""
     ind_df = calculate_indicators(mock_daily_df)
 
-    assert "sma_20" in ind_df.columns
-    assert "sma_50" in ind_df.columns
+    assert "ema_20" in ind_df.columns
+    assert "ema_50" in ind_df.columns
     assert "atr_14" in ind_df.columns
     assert "adx_14" in ind_df.columns
+    assert "rsi_14" in ind_df.columns
+    assert "roc_12" in ind_df.columns
     assert "hv_20" in ind_df.columns
-    assert ind_df["sma_20"].iloc[-1] > 0.0
+    assert ind_df["ema_20"].iloc[-1] > 0.0
     assert ind_df["atr_14"].iloc[-1] > 0.0
+
+
+def test_check_morning_gap_veto():
+    """Test 09:15 AM morning opening gap veto logic."""
+    # Gap = 2.0, max_allowed = 1.5 * 1.0 = 1.5 -> VETO
+    is_vetoed, msg = check_morning_gap_veto(open_price=102.0, prev_close=100.0, atr_14=1.0)
+    assert is_vetoed is True
+    assert "VETO" in msg
+
+    # Gap = 0.5, max_allowed = 1.5 * 1.0 = 1.5 -> PASS
+    is_vetoed, msg = check_morning_gap_veto(open_price=100.5, prev_close=100.0, atr_14=1.0)
+    assert is_vetoed is False
+    assert "PASS" in msg
 
 
 def test_run_eod_scanner_exports_valid_files(tmp_path):
     """Test scanner execution over a small universe exports valid JSON and Markdown files."""
     test_universe = ["RELIANCE", "TCS"]
-    res = run_eod_scanner(universe=test_universe, output_dir=tmp_path)
+    res = run_eod_scanner(universe=test_universe, output_dir=tmp_path, min_conviction_score=0.0)
 
     assert isinstance(res, dict)
     assert "top_bullish" in res
