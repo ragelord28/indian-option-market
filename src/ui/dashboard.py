@@ -129,9 +129,27 @@ elif selected_tab == "⚡ Live Option Chain & Greeks":
     st.markdown('<p class="main-title">⚡ Live Option Chain & Greeks</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-title">Real-time strike ladder, PCR, Max Pain, and Top 3 Strike Recommendation Engine</p>', unsafe_allow_html=True)
 
+    # Load shortlisted symbols from watchlist_latest.json
+    json_path = Path("data/watchlists/watchlist_latest.json")
+    shortlisted_symbols = []
+    if json_path.exists():
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                wl_data = json.load(f)
+            for cat in ["top_bullish", "top_bearish", "top_volatility_harvest"]:
+                for item in wl_data.get(cat, []):
+                    sym = item.get("symbol")
+                    if sym and sym not in shortlisted_symbols:
+                        shortlisted_symbols.append(sym)
+        except Exception:
+            pass
+
+    if not shortlisted_symbols:
+        shortlisted_symbols = ["RELIANCE", "NIFTY50", "BANKNIFTY", "INFY", "TCS", "HDFCBANK"]
+
     col_sym, col_bias = st.columns([1, 1])
     with col_sym:
-        symbol = st.selectbox("Select Symbol for Live Option Chain:", ["RELIANCE", "NIFTY50", "BANKNIFTY", "INFY", "TCS", "HDFCBANK"])
+        symbol = st.selectbox("Select Shortlisted Symbol for Live Option Chain:", shortlisted_symbols)
     with col_bias:
         bias_choice = st.radio("Directional Strategy Bias:", ["BULLISH (Call Options)", "BEARISH (Put Options)"], horizontal=True)
     bias = "BULLISH" if "BULLISH" in bias_choice else "BEARISH"
