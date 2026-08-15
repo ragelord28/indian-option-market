@@ -11,11 +11,17 @@ Features 4 Interactive Modules:
 from datetime import datetime
 import json
 from pathlib import Path
+import sys
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+# Ensure project root is on sys.path
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data import UpstoxProvider, calculate_pcr, find_max_pain, rank_strikes
 
