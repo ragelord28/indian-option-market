@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 10 Upstox Live API v2 Adapter & OAuth Manager Complete
-- **Status**: Phases 1–10 Complete. Built `UpstoxProvider` live data provider adapter implementing ADR-005 schema, option chain analytics, and 1-Click OAuth 2.0 Auth Manager (`upstox_auth.py`). Live connectivity verified with 200 OK responses. All 39 unit tests passing.
+- **Active Phase**: Phase 11 D-1 Nightly Scanner & Streamlit Quant Command Center Complete
+- **Status**: Phases 1–11 Complete. Built `src/scanner/eod_scanner.py` (Agent 1) generating pre-market watchlist briefings in JSON and Markdown format (`data/watchlists/`). Built 4-module Streamlit UI Dashboard (`src/ui/dashboard.py`). Verified live functionality and automated tests. All 41 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
@@ -29,7 +29,8 @@
 - [x] **Phase 9**: Full NSE F&O Universe Real Data Benchmark (`src/scanner/universe.py`, `run_real_benchmark.py`)
 - [x] **Phase 9.5**: Red Team Remediation & Honest Benchmark (`src/backtester/engine.py`, `src/backtester/benchmark.py`)
 - [x] **Phase 9.9**: Engine Rebuild (`src/backtester/engine.py`, `PortfolioEngine`, `synthetic_options.py`)
-- [x] **Phase 10**: Intraday Strategies & 60-Day 15m Benchmark (`src/strategies/avpc_afternoon.py`, `run_real_benchmark.py`)
+- [x] **Phase 10**: Intraday Strategies & Upstox Live API v2 Adapter (`src/data/upstox_provider.py`, `upstox_auth.py`)
+- [x] **Phase 11**: D-1 Nightly Scanner & Streamlit Quant Command Center (`src/scanner/eod_scanner.py`, `src/ui/dashboard.py`)
 
 ## Next Immediate Steps
 1. Upstox API live data integration (`UpstoxProvider`).

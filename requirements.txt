@@ -6,3 +6,5 @@ python-dotenv
 py_vollib
 scipy
 requests
+streamlit
+plotly
