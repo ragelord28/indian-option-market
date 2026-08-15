@@ -2,13 +2,18 @@
 Unit tests for Option Analytics & Strike Ranking Engine (src/data/option_analytics.py).
 
 Per CodingStandards.md:
-- Tests verify PCR, Max Pain, and Top-3 strike recommendation logic for Bullish/Bearish biases.
+- Tests verify PCR, Max Pain, Top-3 strike recommendation, and single best strike sniper view logic.
 """
 
 import pandas as pd
 import pytest
 
-from src.data.option_analytics import calculate_pcr, find_max_pain, rank_strikes
+from src.data.option_analytics import (
+    calculate_pcr,
+    find_max_pain,
+    rank_strikes,
+    get_best_strike,
+)
 
 
 @pytest.fixture
@@ -26,9 +31,6 @@ def mock_option_chain_df() -> pd.DataFrame:
 
 def test_calculate_pcr(mock_option_chain_df: pd.DataFrame):
     """Test PCR calculation (Total Put OI / Total Call OI)."""
-    # Total Call OI = 50k + 80k + 150k + 120k + 90k = 490k
-    # Total Put OI = 150k + 120k + 180k + 90k + 40k = 580k
-    # Expected PCR = 580 / 490 = 1.18
     pcr = calculate_pcr(mock_option_chain_df)
     assert pcr == 1.18
 
@@ -61,3 +63,22 @@ def test_rank_strikes_bearish(mock_option_chain_df: pd.DataFrame):
     assert list(top_3["Rank"]) == [1, 2, 3]
     assert top_3["Option Type"].iloc[0] == "PE"
     assert top_3["Strike Price"].iloc[1] == 2500.0  # ATM strike
+
+
+def test_get_best_strike(mock_option_chain_df: pd.DataFrame):
+    """Test get_best_strike function for single best strike sniper view."""
+    best_call = get_best_strike(
+        mock_option_chain_df,
+        spot_price=2500.0,
+        underlying_target=2550.0,
+        bias="BULLISH",
+        lot_size=50,
+    )
+
+    assert isinstance(best_call, dict)
+    assert best_call["strike"] == 2450.0  # Delta 0.62 closest to 0.65
+    assert best_call["type"] == "CE"
+    assert best_call["ltp"] == 70.0
+    assert best_call["capital"] == 70.0 * 50  # 3500.0
+    # Move = 50, premium gain = 50 * 0.62 = 31.0. Option target = 70 + 31 = 101.0
+    assert best_call["option_target_price"] == 101.0

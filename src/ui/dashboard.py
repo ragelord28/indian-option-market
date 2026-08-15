@@ -3,7 +3,7 @@ Quant F&O Command Center — Streamlit UI Dashboard.
 
 Features 4 Interactive Modules:
 1. D-1 Actionable Watchlist (Bullish / Bearish / Volatility Harvest Setups).
-2. Live Option Chain & Greeks Analytics + Top 3 Strike Recommendation Engine.
+2. Live Option Chain & Greeks Analytics + Single Best Strike Sniper View.
 3. Portfolio & Benchmark Analytics (ROI, CAGR, Max Drawdown, Plotly Equity Curves).
 4. Risk & Audit Trail (Live Capital Allocation & Audit Logs).
 """
@@ -23,7 +23,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.data import UpstoxProvider, calculate_pcr, find_max_pain, rank_strikes
+from src.data import (
+    UpstoxProvider,
+    calculate_pcr,
+    find_max_pain,
+    rank_strikes,
+    get_best_strike,
+)
 
 # Page Configuration
 st.set_page_config(
@@ -123,15 +129,17 @@ if selected_tab == "📊 D-1 Actionable Watchlist":
             st.dataframe(df_display, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 2: Live Option Chain & Greeks
+# TAB 2: Live Option Chain & Greeks / Single Best Strike Sniper View
 # -----------------------------------------------------------------------------
 elif selected_tab == "⚡ Live Option Chain & Greeks":
-    st.markdown('<p class="main-title">⚡ Live Option Chain & Greeks</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-title">Real-time strike ladder, PCR, Max Pain, and Top 3 Strike Recommendation Engine</p>', unsafe_allow_html=True)
+    st.markdown('<p class="main-title">⚡ Single Best Strike Sniper View</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Real-time strike sniper recommendation, option target pricing, PCR, and Max Pain analytics</p>', unsafe_allow_html=True)
 
-    # Load shortlisted symbols from watchlist_latest.json
+    # Load shortlisted symbols & targets from watchlist_latest.json
     json_path = Path("data/watchlists/watchlist_latest.json")
     shortlisted_symbols = []
+    symbol_details_map = {}
+
     if json_path.exists():
         try:
             with open(json_path, "r", encoding="utf-8") as f:
@@ -139,8 +147,10 @@ elif selected_tab == "⚡ Live Option Chain & Greeks":
             for cat in ["top_bullish", "top_bearish", "top_volatility_harvest"]:
                 for item in wl_data.get(cat, []):
                     sym = item.get("symbol")
-                    if sym and sym not in shortlisted_symbols:
-                        shortlisted_symbols.append(sym)
+                    if sym:
+                        if sym not in shortlisted_symbols:
+                            shortlisted_symbols.append(sym)
+                        symbol_details_map[sym] = item
         except Exception:
             pass
 
@@ -151,22 +161,56 @@ elif selected_tab == "⚡ Live Option Chain & Greeks":
     with col_sym:
         symbol = st.selectbox("Select Shortlisted Symbol for Live Option Chain:", shortlisted_symbols)
     with col_bias:
-        bias_choice = st.radio("Directional Strategy Bias:", ["BULLISH (Call Options)", "BEARISH (Put Options)"], horizontal=True)
+        default_bias = "BULLISH (Call Options)"
+        if symbol in symbol_details_map:
+            act = symbol_details_map[symbol].get("suggested_action", "")
+            if "PUT" in act:
+                default_bias = "BEARISH (Put Options)"
+        bias_choice = st.radio("Directional Strategy Bias:", ["BULLISH (Call Options)", "BEARISH (Put Options)"], horizontal=True, index=0 if default_bias.startswith("BULLISH") else 1)
+
     bias = "BULLISH" if "BULLISH" in bias_choice else "BEARISH"
 
-    if st.button("Fetch Live Option Chain"):
+    if st.button("🔍 Find Best Strike"):
         provider = UpstoxProvider()
         try:
             chain_df = provider.fetch_option_chain(symbol)
             if chain_df.empty:
-                st.warning(f"No active option chain data returned for {symbol}.")
+                st.warning("No option chain data returned. Market may be closed or token expired.")
             else:
                 pcr_val = calculate_pcr(chain_df)
                 max_pain_val = find_max_pain(chain_df)
                 atm_row = chain_df.iloc[len(chain_df) // 2]
-                spot_price = float(atm_row["strike_price"])
+                atm_spot = float(atm_row["strike_price"])
                 total_oi = int(chain_df["call_oi"].sum() + chain_df["put_oi"].sum())
 
+                # Lookup target & spot from watchlist if available
+                if symbol in symbol_details_map:
+                    item = symbol_details_map[symbol]
+                    spot_price = float(item.get("close", atm_spot))
+                    underlying_target = float(item.get("target", spot_price * (1.02 if bias == "BULLISH" else 0.98)))
+                else:
+                    spot_price = atm_spot
+                    underlying_target = spot_price * (1.02 if bias == "BULLISH" else 0.98)
+
+                # Compute Single Best Strike Recommendation
+                best = get_best_strike(
+                    chain_df,
+                    spot_price=spot_price,
+                    underlying_target=underlying_target,
+                    bias=bias,
+                    lot_size=50,
+                )
+
+                st.markdown("---")
+                st.markdown("### 🎯 Single Best Strike Recommendation")
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Optimal Strike", f"{best['strike']} {best['type']}")
+                c2.metric("Entry Premium (LTP)", f"₹{best['ltp']:.2f}")
+                c3.metric("Option Target", f"₹{best['option_target_price']:.2f}")
+                c4.metric("Capital Required (1 Lot)", f"₹{best['capital']:,.2f}")
+
+                st.markdown("---")
                 # Top Summary Metrics Row
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Underlying Spot Price", f"₹{spot_price:,.2f}")
@@ -175,9 +219,7 @@ elif selected_tab == "⚡ Live Option Chain & Greeks":
                 m4.metric("Total Open Interest", f"{total_oi:,}")
 
                 st.markdown("---")
-
-                # Top 3 Recommended Strikes
-                st.markdown(f"### 🎯 Recommended Top 3 Strikes to Trade ({bias})")
+                st.markdown("### Top 3 Ranked Option Strikes")
                 top_strikes_df = rank_strikes(chain_df, spot_price=spot_price, bias=bias, lot_size=50)
                 top_strikes_df.index = range(1, len(top_strikes_df) + 1)
 
