@@ -9,7 +9,7 @@ Features 5 Interactive Modules:
 5. Risk & Audit Trail (Live Capital Allocation & Audit Logs).
 """
 
-from datetime import datetime
+from datetime import datetime, time
 import json
 from pathlib import Path
 import sys
@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import pytz
 import streamlit as st
 
 # Ensure project root is on sys.path
@@ -36,6 +37,26 @@ from src.data import (
 )
 from src.radar.morning_radar import run_morning_radar
 from src.scanner.eod_scanner import check_morning_gap_veto
+
+
+def is_market_session_active() -> bool:
+    """
+    Check if current time is within live NSE market hours (Mon-Fri 09:15 to 15:30 IST).
+    """
+    try:
+        ist = pytz.timezone("Asia/Kolkata")
+        now = datetime.now(ist)
+    except Exception:
+        now = datetime.now()
+
+    # Weekend check (Saturday=5, Sunday=6)
+    if now.weekday() >= 5:
+        return False
+
+    market_open = time(9, 15)
+    market_close = time(15, 30)
+    return market_open <= now.time() <= market_close
+
 
 # Page Configuration
 st.set_page_config(
@@ -104,7 +125,9 @@ if selected_tab == "📊 D-1 Command Center":
         table_rows = []
         for r in radar_items:
             st_code = r["status"]
-            if st_code == "TRIGGERED":
+            if not is_market_session_active():
+                status_badge = "🟡 AWAITING ORB (Pre-Market)"
+            elif st_code == "TRIGGERED":
                 status_badge = "🟢 TRIGGERED"
             elif st_code == "AWAITING_ORB":
                 status_badge = "🟡 AWAITING ORB"
