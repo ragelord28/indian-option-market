@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 11.5 Institutional Quant & Risk Engine Upgrades Complete
-- **Status**: Phases 1–11.5 Complete. Upgraded option analytics engine with VRP ($\text{IV} - \text{HV}$) calculations, linear PCR regime classification, and spread liquidity gating (>4% warning). Built dynamic conviction scoring (0-100) and 09:15 AM morning opening gap veto check (`check_morning_gap_veto`). All 49 unit tests passing cleanly.
+- **Active Phase**: Phase 12 Institutional Strategy Desk, Agent 1.5 Morning Radar & Dashboard Upgrade Complete
+- **Status**: Phases 1–12 Complete. Built `src/data/strategy_builder.py` (Multi-Leg Strategy Builder & Execution Ticket Analytics Engine) and `src/radar/morning_radar.py` (Agent 1.5 Morning Radar with Sector Limit, Event Risk, 09:15 Gap Veto, and 09:30 ORB triggers). Redesigned 4-module Streamlit UI Dashboard (`src/ui/dashboard.py`). All 54 unit tests passing cleanly.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
@@ -31,6 +31,8 @@
 - [x] **Phase 9.9**: Engine Rebuild (`src/backtester/engine.py`, `PortfolioEngine`, `synthetic_options.py`)
 - [x] **Phase 10**: Intraday Strategies & Upstox Live API v2 Adapter (`src/data/upstox_provider.py`, `upstox_auth.py`)
 - [x] **Phase 11**: D-1 Nightly Scanner & Streamlit Quant Command Center (`src/scanner/eod_scanner.py`, `src/ui/dashboard.py`)
+- [x] **Phase 11.5**: Institutional Quant & Risk Engine Upgrades (`src/data/option_analytics.py`, `VRP`, PCR Interpretation, Gap Veto)
+- [x] **Phase 12**: Institutional Strategy Desk & Agent 1.5 Morning Radar (`src/data/strategy_builder.py`, `src/radar/morning_radar.py`, `src/ui/dashboard.py`)
 
 ## Next Immediate Steps
 1. Upstox API live data integration (`UpstoxProvider`).
