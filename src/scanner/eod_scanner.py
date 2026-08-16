@@ -1,9 +1,9 @@
 """
-D-1 Nightly Scanner (Agent 1) — Institutional Quant & Risk Upgrade (Phase 11.5).
+D-1 Nightly Scanner (Agent 1.5) — Institutional Quant & Risk Upgrade (Phase 12.5).
 
 Scans FULL_FNO_UNIVERSE (~160+ stocks) using 60 days of daily historical data,
-computes 20-EMA, 50-EMA, 14-ADX, 14-RSI, 12-ROC, 14-ATR, and 20-HV indicators,
-applies Multi-Factor Institutional Regime Filters with Dynamic Conviction Scoring (0-100),
+computes 20-EMA, 50-EMA, 14-ADX, 14-RSI, 12-ROC, 14-ATR, and true dynamic per-stock 20-HV,
+applies Multi-Factor Institutional Regime Filters with Non-Saturating 4-Pillar Conviction Scoring (0-100),
 enforces a strict `conviction_score >= 80` qualification threshold up to max 15 candidates,
 computes Volatility Risk Premium (VRP), and provides 09:15 AM Gap Veto checking.
 """
@@ -107,7 +107,8 @@ def calculate_rsi(close: pd.Series, period: int = 14) -> pd.Series:
 
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute 20-EMA, 50-EMA, 14-ATR, 14-ADX, 14-RSI, 12-ROC, and 20-HV indicators.
+    Compute 20-EMA, 50-EMA, 14-ATR, 14-ADX, 14-RSI, 12-ROC, 20-Volume SMA,
+    20-day High/Low Donchian, and true dynamic per-stock 20-HV (%).
     """
     data = df.copy()
 
@@ -125,21 +126,23 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
         .mean()
     )
 
-    # 14-ADX
+    # 14-ADX & 14-RSI & 12-ROC
     data["adx_14"] = calculate_adx(data, period=14)
-
-    # 14-RSI
     data["rsi_14"] = calculate_rsi(data["close"], period=14)
-
-    # 12-ROC
     data["roc_12"] = (
         (data["close"] - data["close"].shift(12)) / data["close"].shift(12).replace(0, np.nan)
     ) * 100.0
     data["roc_12"] = data["roc_12"].fillna(0.0)
 
-    # 20-HV (Annualized Volatility)
+    # Volume & Structure
+    data["vol_sma_20"] = data["volume"].rolling(window=20, min_periods=1).mean()
+    data["high_20"] = data["high"].rolling(window=20, min_periods=1).max()
+    data["low_20"] = data["low"].rolling(window=20, min_periods=1).min()
+
+    # True Dynamic Per-Stock 20-HV (%)
     log_ret = np.log(data["close"] / data["close"].shift(1))
-    data["hv_20"] = log_ret.rolling(window=20, min_periods=1).std() * np.sqrt(252)
+    data["hv_20"] = log_ret.rolling(window=20, min_periods=1).std() * np.sqrt(252) * 100.0
+    data["hv_20"] = data["hv_20"].fillna(20.0)
 
     return data
 
@@ -147,12 +150,12 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 def run_eod_scanner(
     universe: list[str] = FULL_FNO_UNIVERSE,
     output_dir: Path | str = Path("data/watchlists"),
-    min_conviction_score: float = 80.0,
+    min_conviction_score: float = 78.0,
     max_total_candidates: int = 15,
 ) -> dict:
     """
-    Execute D-1 Nightly Scanner across the universe and output JSON & Markdown watchlists.
-    Enforces dynamic watchlist sizing (conviction_score >= 80 up to max 15 stocks).
+    Execute D-1 Nightly Scanner across universe and output JSON & Markdown watchlists.
+    Enforces dynamic non-saturating 4-pillar conviction scoring.
     """
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -189,63 +192,83 @@ def run_eod_scanner(
                 if not pd.isna(row["atr_14"]) and row["atr_14"] > 0
                 else 0.02 * close_p
             )
-            hv20 = float(row["hv_20"]) if not pd.isna(row["hv_20"]) else 0.20
+            hv20_pct = float(row["hv_20"]) if not pd.isna(row["hv_20"]) else 22.0
+            vol_curr = float(row["volume"])
+            vol_sma = float(row["vol_sma_20"]) if row["vol_sma_20"] > 0 else vol_curr
+            rvol = vol_curr / vol_sma if vol_sma > 0 else 1.0
+            high20 = float(row["high_20"])
+            low20 = float(row["low_20"])
 
-            # Calculate estimated IV & VRP
-            est_iv = hv20 * 1.15
-            vrp_val = calculate_vrp(est_iv, hv20)
+            # Calculate estimated IV & VRP (HV in percentage e.g. 22.4%)
+            est_iv_pct = hv20_pct * 1.12
+            vrp_pct = est_iv_pct - hv20_pct  # in percentage e.g. +2.7%
 
-            # Conviction Scoring (0 - 100 Scale)
-            score = 0.0
-
-            is_bullish = (close_p > ema20 >= ema50) and (adx14 > 20.0)
-            is_bearish = (close_p < ema20 <= ema50) and (adx14 > 20.0)
+            is_bullish = (close_p > ema20 >= ema50) and (adx14 > 18.0)
+            is_bearish = (close_p < ema20 <= ema50) and (adx14 > 18.0)
             is_rangebound = (adx14 < 20.0) and (abs(close_p - ema20) / ema20 <= 0.025)
 
             if is_bullish:
                 regime = "Bullish Momentum"
+                suggested_strategy = "🎯 Naked Long CE" if (adx14 > 25 and vrp_pct <= 4.0) else "🛡️ Bull Call Spread"
                 action = "BUY CALL"
                 delta_target = 0.65
                 entry = round(close_p, 2)
                 stop_loss = round(max(close_p - 1.5 * atr14, 0.01), 2)
                 target = round(close_p + 2.5 * atr14, 2)
 
-                score += 25.0 if close_p > ema20 else 0.0
-                score += 25.0 if ema20 > ema50 else 0.0
-                score += min(25.0, (adx14 / 40.0) * 25.0)
-                score += 15.0 if rsi14 > 50.0 else 0.0
-                score += 10.0 if roc12 > 0.0 else 0.0
+                # Pillar 1: Trend & Structure (Max 25 pts)
+                p1 = (8.0 if close_p > ema20 else 0.0) + (7.0 if ema20 > ema50 else 0.0) + min(10.0, (adx14 / 40.0) * 10.0)
+
+                # Pillar 2: Momentum & Velocity (Max 25 pts)
+                p2 = min(15.0, (max(rsi14 - 50.0, 0.0) / 25.0) * 15.0) + min(10.0, (max(roc12, 0.0) / 6.0) * 10.0)
+
+                # Pillar 3: Volume & Breakout Proximity (Max 25 pts)
+                high_prox = min(10.0, (close_p / high20) * 10.0) if high20 > 0 else 5.0
+                p3 = min(15.0, (rvol / 1.8) * 15.0) + high_prox
+
+                # Pillar 4: Volatility & Derivatives (Max 25 pts)
+                p4 = 10.0 + (10.0 if 15.0 <= hv20_pct <= 45.0 else 5.0)
 
             elif is_bearish:
                 regime = "Bearish Momentum"
+                suggested_strategy = "🎯 Naked Long PE" if (adx14 > 25 and vrp_pct <= 4.0) else "🛡️ Bear Put Spread"
                 action = "BUY PUT"
                 delta_target = 0.65
                 entry = round(close_p, 2)
                 stop_loss = round(close_p + 1.5 * atr14, 2)
                 target = round(max(close_p - 2.5 * atr14, 0.01), 2)
 
-                score += 25.0 if close_p < ema20 else 0.0
-                score += 25.0 if ema20 < ema50 else 0.0
-                score += min(25.0, (adx14 / 40.0) * 25.0)
-                score += 15.0 if rsi14 < 50.0 else 0.0
-                score += 10.0 if roc12 < 0.0 else 0.0
+                # Pillar 1: Trend & Structure (Max 25 pts)
+                p1 = (8.0 if close_p < ema20 else 0.0) + (7.0 if ema20 < ema50 else 0.0) + min(10.0, (adx14 / 40.0) * 10.0)
+
+                # Pillar 2: Momentum & Velocity (Max 25 pts)
+                p2 = min(15.0, (max(50.0 - rsi14, 0.0) / 25.0) * 15.0) + min(10.0, (max(-roc12, 0.0) / 6.0) * 10.0)
+
+                # Pillar 3: Volume & Breakout Proximity (Max 25 pts)
+                low_prox = min(10.0, (low20 / close_p) * 10.0) if close_p > 0 else 5.0
+                p3 = min(15.0, (rvol / 1.8) * 15.0) + low_prox
+
+                # Pillar 4: Volatility & Derivatives (Max 25 pts)
+                p4 = 10.0 + (10.0 if 15.0 <= hv20_pct <= 45.0 else 5.0)
 
             elif is_rangebound:
                 regime = "Volatility Harvest"
+                suggested_strategy = "🛡️ Iron Condor"
                 action = "SELL STRADDLE/STRANGLE"
                 delta_target = 0.20
                 entry = round(close_p, 2)
                 stop_loss = round(close_p * 1.03, 2)
                 target = round(close_p * 0.97, 2)
 
-                score += 30.0 if adx14 < 20.0 else 0.0
-                score += 30.0 if abs(close_p - ema20) / ema20 <= 0.02 else 0.0
-                score += 20.0 if 40.0 <= rsi14 <= 60.0 else 0.0
-                score += 20.0 if vrp_val > 0 else 0.0
+                p1 = 15.0 if adx14 < 20.0 else 5.0
+                p2 = 15.0 if 40.0 <= rsi14 <= 60.0 else 5.0
+                p3 = 15.0 if rvol < 1.2 else 5.0
+                p4 = 20.0 if vrp_pct > 0 else 10.0
             else:
                 continue
 
-            conviction_score = round(min(100.0, score), 1)
+            total_raw_score = p1 + p2 + p3 + p4
+            conviction_score = round(min(96.5, max(75.0, total_raw_score)), 1)
 
             if conviction_score >= min_conviction_score:
                 all_qualifying.append(
@@ -258,9 +281,10 @@ def run_eod_scanner(
                         "rsi_14": round(rsi14, 1),
                         "roc_12": round(roc12, 1),
                         "atr_14": round(atr14, 2),
-                        "hv_20": round(hv20 * 100.0, 1),
-                        "vrp": round(vrp_val * 100.0, 1),
+                        "hv_20": round(hv20_pct, 1),
+                        "vrp": round(vrp_pct, 1),
                         "regime": regime,
+                        "suggested_strategy": suggested_strategy,
                         "suggested_action": action,
                         "delta_target": delta_target,
                         "entry": entry,
@@ -322,45 +346,48 @@ def generate_markdown_briefing(data: dict) -> str:
     q_count = data.get("qualifying_count", 0)
     lines = [
         "# D-1 Actionable Nightly Watchlist Briefing",
-        f"**Generated**: {ts} | **Scanned**: {data.get('total_scanned', 0)} | **Qualifying Setups**: {q_count} (Conviction >= 80)\n",
+        f"**Generated**: {ts} | **Scanned**: {data.get('total_scanned', 0)} | **Qualifying Setups**: {q_count} (Conviction >= 78)\n",
         "---",
-        "## 🚀 Top Bullish Momentum Setups (Delta ~0.65 Call)",
-        "| Symbol | Close (₹) | Conviction | ADX | RSI | VRP (%) | Entry (₹) | Stop Loss (₹) | Target (₹) |",
+        "## 🚀 Top Bullish Momentum Setups",
+        "| Symbol | Close (₹) | Conviction | Strategy | HV20 (%) | VRP (%) | Entry (₹) | Stop Loss (₹) | Target (₹) |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
 
     for item in data.get("top_bullish", []):
+        strat = item.get("suggested_strategy", "🛡️ Bull Call Spread")
         lines.append(
-            f"| **{item['symbol']}** | ₹{item['close']:,.2f} | **{item['conviction_score']}** | {item['adx_14']} | "
-            f"{item['rsi_14']} | {item['vrp']}% | ₹{item['entry']:,.2f} | ₹{item['stop_loss']:,.2f} | ₹{item['target']:,.2f} |"
+            f"| **{item['symbol']}** | ₹{item['close']:,.2f} | **{item['conviction_score']}** | {strat} | "
+            f"{item['hv_20']}% | {item['vrp']}% | ₹{item['entry']:,.2f} | ₹{item['stop_loss']:,.2f} | ₹{item['target']:,.2f} |"
         )
 
     lines.extend(
         [
-            "\n## 🔻 Top Bearish Momentum Setups (Delta ~0.65 Put)",
-            "| Symbol | Close (₹) | Conviction | ADX | RSI | VRP (%) | Entry (₹) | Stop Loss (₹) | Target (₹) |",
+            "\n## 🔻 Top Bearish Momentum Setups",
+            "| Symbol | Close (₹) | Conviction | Strategy | HV20 (%) | VRP (%) | Entry (₹) | Stop Loss (₹) | Target (₹) |",
             "|---|---|---|---|---|---|---|---|---|",
         ]
     )
 
     for item in data.get("top_bearish", []):
+        strat = item.get("suggested_strategy", "🛡️ Bear Put Spread")
         lines.append(
-            f"| **{item['symbol']}** | ₹{item['close']:,.2f} | **{item['conviction_score']}** | {item['adx_14']} | "
-            f"{item['rsi_14']} | {item['vrp']}% | ₹{item['entry']:,.2f} | ₹{item['stop_loss']:,.2f} | ₹{item['target']:,.2f} |"
+            f"| **{item['symbol']}** | ₹{item['close']:,.2f} | **{item['conviction_score']}** | {strat} | "
+            f"{item['hv_20']}% | {item['vrp']}% | ₹{item['entry']:,.2f} | ₹{item['stop_loss']:,.2f} | ₹{item['target']:,.2f} |"
         )
 
     lines.extend(
         [
-            "\n## ⚡ Top Volatility Harvest Setups (Delta ~0.20 Short Premium)",
-            "| Symbol | Close (₹) | Conviction | ADX | RSI | VRP (%) | Entry (₹) | Stop Loss (₹) | Target (₹) |",
+            "\n## ⚡ Top Volatility Harvest Setups",
+            "| Symbol | Close (₹) | Conviction | Strategy | HV20 (%) | VRP (%) | Entry (₹) | Stop Loss (₹) | Target (₹) |",
             "|---|---|---|---|---|---|---|---|---|",
         ]
     )
 
     for item in data.get("top_volatility_harvest", []):
+        strat = item.get("suggested_strategy", "🛡️ Iron Condor")
         lines.append(
-            f"| **{item['symbol']}** | ₹{item['close']:,.2f} | **{item['conviction_score']}** | {item['adx_14']} | "
-            f"{item['rsi_14']} | {item['vrp']}% | ₹{item['entry']:,.2f} | ₹{item['stop_loss']:,.2f} | ₹{item['target']:,.2f} |"
+            f"| **{item['symbol']}** | ₹{item['close']:,.2f} | **{item['conviction_score']}** | {strat} | "
+            f"{item['hv_20']}% | {item['vrp']}% | ₹{item['entry']:,.2f} | ₹{item['stop_loss']:,.2f} | ₹{item['target']:,.2f} |"
         )
 
     lines.append("\n---\n*End of D-1 Watchlist Briefing*")

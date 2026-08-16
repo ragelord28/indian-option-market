@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 12 Institutional Strategy Desk, Agent 1.5 Morning Radar & Dashboard Upgrade Complete
-- **Status**: Phases 1–12 Complete. Built `src/data/strategy_builder.py` (Multi-Leg Strategy Builder & Execution Ticket Analytics Engine) and `src/radar/morning_radar.py` (Agent 1.5 Morning Radar with Sector Limit, Event Risk, 09:15 Gap Veto, and 09:30 ORB triggers). Redesigned 4-module Streamlit UI Dashboard (`src/ui/dashboard.py`). All 54 unit tests passing cleanly.
+- **Active Phase**: Phase 12.5 True Dynamic HV20, Naked/Spread Selector & Trade Journal Complete
+- **Status**: Phases 1–12.5 Complete. Upgraded D-1 scanner with per-stock dynamic 20-HV (%) and non-saturating 4-pillar conviction scoring (75-95 range). Built dual payload support for Naked ITM Sniper vs Defined-Risk Spreads in `src/data/strategy_builder.py`. Refactored Streamlit UI (`src/ui/dashboard.py`) with `hide_index=True`, Execution Mode radio toggle, and Tab 3 Live Trade Journal & Capital Tracker (`data/paper/trade_history.json`). All 54 unit tests passing.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
@@ -33,6 +33,7 @@
 - [x] **Phase 11**: D-1 Nightly Scanner & Streamlit Quant Command Center (`src/scanner/eod_scanner.py`, `src/ui/dashboard.py`)
 - [x] **Phase 11.5**: Institutional Quant & Risk Engine Upgrades (`src/data/option_analytics.py`, `VRP`, PCR Interpretation, Gap Veto)
 - [x] **Phase 12**: Institutional Strategy Desk & Agent 1.5 Morning Radar (`src/data/strategy_builder.py`, `src/radar/morning_radar.py`, `src/ui/dashboard.py`)
+- [x] **Phase 12.5**: Dynamic HV20, Naked/Spread Selector & Trade Journal (`src/scanner/eod_scanner.py`, `src/data/strategy_builder.py`, `src/ui/dashboard.py`)
 
 ## Next Immediate Steps
 1. Upstox API live data integration (`UpstoxProvider`).

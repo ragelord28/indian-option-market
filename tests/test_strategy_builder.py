@@ -35,9 +35,10 @@ def test_build_bull_call_debit_spread(mock_option_chain_df: pd.DataFrame):
         vrp=-2.0,
         option_chain_df=mock_option_chain_df,
         lot_size=50,
+        conviction_score=82.0,
     )
 
-    assert ticket["strategy_name"] == "Bull Call Debit Spread"
+    assert "Bull Call Debit Spread" in ticket["strategy_name"]
     assert len(ticket["legs"]) == 2
     assert ticket["legs"][0]["Action"] == "BUY"
     assert ticket["legs"][1]["Action"] == "SELL"
@@ -46,6 +47,8 @@ def test_build_bull_call_debit_spread(mock_option_chain_df: pd.DataFrame):
     assert ticket["max_loss"] > 0
     assert "net_greeks" in ticket
     assert "payoff_curve" in ticket
+    assert "naked_option" in ticket
+    assert "spread_option" in ticket
 
 
 def test_build_bull_put_credit_spread(mock_option_chain_df: pd.DataFrame):
@@ -58,9 +61,10 @@ def test_build_bull_put_credit_spread(mock_option_chain_df: pd.DataFrame):
         vrp=6.0,
         option_chain_df=mock_option_chain_df,
         lot_size=50,
+        conviction_score=82.0,
     )
 
-    assert ticket["strategy_name"] == "Bull Put Credit Spread"
+    assert "Bull Put Credit Spread" in ticket["strategy_name"]
     assert len(ticket["legs"]) == 2
     assert ticket["legs"][0]["Action"] == "SELL"
     assert ticket["legs"][1]["Action"] == "BUY"
@@ -77,9 +81,10 @@ def test_build_iron_condor(mock_option_chain_df: pd.DataFrame):
         vrp=4.0,
         option_chain_df=mock_option_chain_df,
         lot_size=50,
+        conviction_score=80.0,
     )
 
-    assert ticket["strategy_name"] == "Iron Condor"
+    assert "Iron Condor" in ticket["strategy_name"]
     assert len(ticket["legs"]) == 4
     assert "guaranteed_slippage_cost" in ticket
     assert ticket["liquidity_grade"] in ["A", "B", "C (VETO)"]

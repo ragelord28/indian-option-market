@@ -1,11 +1,12 @@
 """
-Quant F&O Command Center — Streamlit UI Dashboard (Phase 12 Upgrade).
+Quant F&O Command Center — Streamlit UI Dashboard (Phase 12.5 Upgrade).
 
-Features 4 Interactive Modules:
-1. The D-1 Command Center (Agent 1.5 Morning Radar, Sector Limit & Gap Veto Badges).
-2. The Strategy Desk & Multi-Leg Execution Ticket (Payoff Curves, Net Greeks, Slippage Drag).
-3. Portfolio & Benchmark Analytics (ROI, CAGR, Max Drawdown, Plotly Equity Curves).
-4. Risk & Audit Trail (Live Capital Allocation & Audit Logs).
+Features 5 Interactive Modules:
+1. D-1 Command Center (Agent 1.5 Morning Radar, True HV20 %, VRP, Hide Index).
+2. Strategy Desk & Execution Ticket (Naked ITM Sniper vs Defined-Risk Spread Toggle).
+3. Live Trade Journal & Capital Tracker (₹10L Base Capital, Slot Allocation, Manual Logging).
+4. Portfolio & Benchmark Analytics (ROI, CAGR, Max Drawdown, Plotly Equity Curves).
+5. Risk & Audit Trail (Live Capital Allocation & Audit Logs).
 """
 
 from datetime import datetime
@@ -62,32 +63,18 @@ st.markdown(
 # Sidebar Header & Navigation
 st.sidebar.image("https://img.icons8.com/color/96/bullish.png", width=60)
 st.sidebar.title("Command Center")
-st.sidebar.caption("Indian Option Market Platform v2.0")
+st.sidebar.caption("Indian Option Market Platform v2.5")
 
 selected_tab = st.sidebar.radio(
     "Navigation",
     [
         "📊 D-1 Command Center",
         "⚡ Strategy Desk & Execution Ticket",
+        "💼 Live Trade Journal & Capital Tracker",
         "📈 Portfolio & Benchmark Analytics",
         "🛡️ Risk & Audit Trail",
     ],
 )
-
-# -----------------------------------------------------------------------------
-# GLOBAL HEADER: CAPITAL HEATMAP & SECTOR EXPOSURE
-# -----------------------------------------------------------------------------
-st.markdown('<p class="main-title">⚡ Institutional Quant Command Center</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Phase 12 — Multi-Leg Strategy Desk & Agent 1.5 Morning Radar Engine</p>', unsafe_allow_html=True)
-
-header_c1, header_c2, header_c3, header_c4 = st.columns(4)
-header_c1.metric("Starting Capital Base", "₹10,00,000.00")
-header_c2.metric("Free Cash Available", "₹8,25,000.00", delta="-₹1,75,000 Blocked")
-header_c3.metric("Active Slots Used", "1 / 5 Slots", delta="4 Slots Free")
-header_c4.metric("Active Sector Exposure", "Auto (1), IT (0), Banking (0)")
-
-st.progress(0.175, text="Capital Allocation Progress (17.5% Deployed)")
-st.markdown("---")
 
 # Load Radar Data
 radar_path = Path("data/radar/radar_latest.json")
@@ -105,8 +92,8 @@ radar_items = radar_data.get("radar_items", [])
 # TAB 1: D-1 Command Center
 # -----------------------------------------------------------------------------
 if selected_tab == "📊 D-1 Command Center":
-    st.markdown("## 📊 D-1 Actionable Command Center & Agent 1.5 Radar")
-    st.caption("Pre-market setups evaluated against Sector Limit, Event Blackout, 1.5x ATR Gap Veto, and 09:30 ORB Triggers")
+    st.markdown('<p class="main-title">📊 D-1 Actionable Command Center</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Pre-market setups evaluated against Sector Limit, Event Blackout, 1.5x ATR Gap Veto, and 09:30 ORB Triggers</p>', unsafe_allow_html=True)
 
     if not radar_items:
         st.warning("No radar data available. Run D-1 Scanner & Morning Radar first.")
@@ -134,15 +121,15 @@ if selected_tab == "📊 D-1 Command Center":
                     "Trigger Zone": r["trigger_zone"],
                     "Target Spot": f"₹{r['target']:,.2f}",
                     "Optimal Strategy": strat_name,
-                    "VRP / IVR": f"{r.get('vrp', 5.0):+.1f}% / {r.get('ivr', 45.0):.0f}%",
+                    "HV20 (%)": f"{r.get('hv_20', 22.4):.1f}%",
+                    "VRP (%)": f"{r.get('vrp', 2.5):+.1f}%",
                     "Liq Grade": ticket.get("liquidity_grade", "A"),
-                    "Conviction": r.get("conviction_score", 80.0),
+                    "Conviction Score": f"{r.get('conviction_score', 82.0):.1f}",
                 }
             )
 
         df_cmd = pd.DataFrame(table_rows)
-        df_cmd.index = range(1, len(df_cmd) + 1)
-        st.dataframe(df_cmd, use_container_width=True)
+        st.dataframe(df_cmd, use_container_width=True, hide_index=True)
 
         st.markdown("---")
         st.markdown("### 🔎 14-Factor Technical Checklist Autopsy")
@@ -157,8 +144,8 @@ if selected_tab == "📊 D-1 Command Center":
             a1.write(f"4. **12-ROC Rate of Change**: ✅ +2.4%")
             a1.write(f"5. **14-ATR Volatility Range**: ✅ ₹{item_autopsy['close']*0.02:.2f}")
 
-            a2.write(f"6. **20-HV Annualized Vol**: ✅ 22.4%")
-            a2.write(f"7. **VRP (IV - HV)**: ✅ {item_autopsy.get('vrp', 5.0):+.1f}%")
+            a2.write(f"6. **20-HV Realized Volatility**: ✅ {item_autopsy.get('hv_20', 22.4):.1f}%")
+            a2.write(f"7. **VRP (IV - HV)**: ✅ {item_autopsy.get('vrp', 2.5):+.1f}%")
             a2.write(f"8. **Sector Concentration**: {'✅ Pass (Max 1)' if item_autopsy['status'] != 'VETOED_SECTOR_LIMIT' else '❌ Vetoed (Sector Limit)'}")
             a2.write(f"9. **Event Blackout Check**: ✅ Pass (No Earnings < 48h)")
             a2.write(f"10. **09:15 Opening Gap**: {'✅ Pass' if item_autopsy['status'] != 'VETOED_GAP' else '❌ Vetoed (Gap > 1.5x ATR)'}")
@@ -169,30 +156,44 @@ if selected_tab == "📊 D-1 Command Center":
             a3.write(f"14. **Slippage Drag Threshold**: ✅ Pass (< 20%)")
 
 # -----------------------------------------------------------------------------
-# TAB 2: The Strategy Desk & Execution Ticket
+# TAB 2: Strategy Desk & Execution Ticket
 # -----------------------------------------------------------------------------
 elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
-    st.markdown("## ⚡ The Strategy Desk & Multi-Leg Execution Ticket")
-    st.caption("Institutional options structure selection, post-slippage execution drag, net position Greeks, and multi-curve payoff model")
+    st.markdown('<p class="main-title">⚡ The Strategy Desk & Execution Ticket</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Toggle between Naked ITM Sniper and Multi-Leg Defined-Risk Spreads with real-time slippage & net Greeks</p>', unsafe_allow_html=True)
 
     symbol_options = [r["symbol"] for r in radar_items] if radar_items else ["RELIANCE", "NIFTY50", "BANKNIFTY", "INFY"]
-    selected_symbol = st.selectbox("Select Target Symbol for Strategy Desk:", symbol_options)
+    col_sym, col_mode = st.columns([1, 2])
+
+    with col_sym:
+        selected_symbol = st.selectbox("Select Target Symbol:", symbol_options)
 
     selected_item = next((r for r in radar_items if r["symbol"] == selected_symbol), None)
 
     if selected_item and "execution_ticket" in selected_item:
-        ticket = selected_item["execution_ticket"]
+        full_ticket = selected_item["execution_ticket"]
     else:
-        # Fallback building if missing
-        ticket = build_optimal_strategy(
+        full_ticket = build_optimal_strategy(
             symbol=selected_symbol,
             spot_price=2500.0,
             bias="BULLISH",
             ivr=45.0,
-            vrp=5.0,
+            vrp=2.5,
             option_chain_df=pd.DataFrame(),
             lot_size=50,
         )
+
+    default_mode_idx = 0 if full_ticket.get("default_mode") == "NAKED" else 1
+
+    with col_mode:
+        execution_mode = st.radio(
+            "Execution Mode Strategy Selection:",
+            ["🎯 Naked Single Strike (ITM Sniper)", "🛡️ Defined-Risk Spread"],
+            horizontal=True,
+            index=default_mode_idx,
+        )
+
+    ticket = full_ticket["naked_option"] if "Naked" in execution_mode else full_ticket["spread_option"]
 
     # Section A: CRO Rationale
     st.markdown(
@@ -208,8 +209,7 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
     # Section B: Execution Ticket Table
     st.markdown("### 📋 Multi-Leg Execution Ticket")
     legs_df = pd.DataFrame(ticket["legs"])
-    legs_df.index = range(1, len(legs_df) + 1)
-    st.dataframe(legs_df, use_container_width=True)
+    st.dataframe(legs_df, use_container_width=True, hide_index=True)
 
     # Section C: Capital & Risk Cards
     st.markdown("### 💰 Capital, Slippage & Risk Profile")
@@ -264,7 +264,146 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
     mc5.metric("Max Pain Strike", f"₹{spot_val:,.2f}")
 
 # -----------------------------------------------------------------------------
-# TAB 3: Portfolio & Benchmark Analytics
+# TAB 3: Live Trade Journal & Capital Tracker
+# -----------------------------------------------------------------------------
+elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
+    st.markdown('<p class="main-title">💼 Live Trade Journal & Portfolio Capital Tracker</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Real-time margin slot management, active trade tracking, and manual order execution logger</p>', unsafe_allow_html=True)
+
+    journal_dir = Path("data/paper")
+    journal_dir.mkdir(parents=True, exist_ok=True)
+    active_file = journal_dir / "active_trades.json"
+    history_file = journal_dir / "trade_history.json"
+
+    if not active_file.exists():
+        initial_trades = [
+            {
+                "trade_id": "TRD-1001",
+                "symbol": "RELIANCE",
+                "strategy": "Bull Call Spread",
+                "entry_date": "2026-08-14 09:30 IST",
+                "strike": 2450.0,
+                "entry_premium": 70.0,
+                "quantity_lots": 2,
+                "lot_size": 50,
+                "margin_blocked": 7000.0,
+                "current_ltp": 78.5,
+                "stop_loss": 50.0,
+                "target": 110.0,
+                "status": "OPEN",
+            }
+        ]
+        with open(active_file, "w", encoding="utf-8") as f:
+            json.dump(initial_trades, f, indent=2)
+
+    with open(active_file, "r", encoding="utf-8") as f:
+        active_trades = json.load(f)
+
+    # Capital Summary Calculation
+    total_capital = 1000000.0
+    blocked_margin = sum(t["margin_blocked"] for t in active_trades)
+    free_cash = total_capital - blocked_margin
+    used_slots = len(active_trades)
+
+    # Capital Heatmap Top Bar
+    c_m1, c_m2, c_m3, c_m4 = st.columns(4)
+    c_m1.metric("Starting Base Capital", f"₹{total_capital:,.2f}")
+    c_m2.metric("Total Blocked Margin", f"₹{blocked_margin:,.2f}")
+    c_m3.metric("Free Available Cash", f"₹{free_cash:,.2f}")
+    c_m4.metric("Active Margin Slots", f"{used_slots} / 5 Slots Used", delta=f"{5 - used_slots} Slots Free")
+
+    st.progress(blocked_margin / total_capital, text=f"Capital Deployed: {(blocked_margin / total_capital) * 100:.1f}%")
+    st.markdown("---")
+
+    col_form, col_table = st.columns([1, 2])
+
+    with col_form:
+        st.markdown("### 📝 Log New Trade")
+        with st.form("log_trade_form"):
+            in_symbol = st.text_input("Symbol", "TCS")
+            in_strat = st.selectbox("Strategy", ["Naked Long CE", "Naked Long PE", "Bull Call Spread", "Bull Put Spread", "Bear Put Spread", "Iron Condor"])
+            in_strike = st.number_input("Strike Price (₹)", value=4000.0, step=50.0)
+            in_premium = st.number_input("Entry Premium / Cost (₹)", value=65.0, step=1.0)
+            in_lots = st.number_input("Quantity (Lots)", value=1, min_value=1, max_value=5)
+            in_sl = st.number_input("Stop Loss (₹)", value=45.0, step=1.0)
+            in_target = st.number_input("Target Price (₹)", value=105.0, step=1.0)
+
+            btn_submit = st.form_submit_button("🚀 Submit Order Ticket")
+            if btn_submit:
+                if used_slots >= 5:
+                    st.error("Cannot log trade: Maximum 5 concurrent margin slots reached!")
+                else:
+                    new_trd = {
+                        "trade_id": f"TRD-{1001 + len(active_trades)}",
+                        "symbol": in_symbol.upper(),
+                        "strategy": in_strat,
+                        "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M IST"),
+                        "strike": in_strike,
+                        "entry_premium": in_premium,
+                        "quantity_lots": in_lots,
+                        "lot_size": 50,
+                        "margin_blocked": in_premium * in_lots * 50,
+                        "current_ltp": in_premium,
+                        "stop_loss": in_sl,
+                        "target": in_target,
+                        "status": "OPEN",
+                    }
+                    active_trades.append(new_trd)
+                    with open(active_file, "w", encoding="utf-8") as f:
+                        json.dump(active_trades, f, indent=2)
+                    st.success(f"Logged Trade {new_trd['trade_id']} for {new_trd['symbol']}!")
+                    st.rerun()
+
+    with col_table:
+        st.markdown("### 📊 Active Positions")
+        if not active_trades:
+            st.info("No active positions currently open.")
+        else:
+            display_positions = []
+            for t in active_trades:
+                units = t["quantity_lots"] * t["lot_size"]
+                unrealized_pnl = (t["current_ltp"] - t["entry_premium"]) * units
+                display_positions.append(
+                    {
+                        "Trade ID": t["trade_id"],
+                        "Symbol": t["symbol"],
+                        "Strategy": t["strategy"],
+                        "Lots": t["quantity_lots"],
+                        "Entry (₹)": f"₹{t['entry_premium']:.2f}",
+                        "LTP (₹)": f"₹{t['current_ltp']:.2f}",
+                        "Unrealized P&L": f"₹{unrealized_pnl:+,.2f}",
+                        "Margin (₹)": f"₹{t['margin_blocked']:,.2f}",
+                        "Stop Loss": f"₹{t['stop_loss']:.2f}",
+                        "Target": f"₹{t['target']:.2f}",
+                    }
+                )
+
+            st.dataframe(pd.DataFrame(display_positions), use_container_width=True, hide_index=True)
+
+            st.markdown("#### 🔒 Position Management")
+            trd_to_close = st.selectbox("Select Active Trade to Close:", [t["trade_id"] for t in active_trades])
+            if st.button("🔒 Close Selected Trade"):
+                to_remove = next((t for t in active_trades if t["trade_id"] == trd_to_close), None)
+                if to_remove:
+                    active_trades = [t for t in active_trades if t["trade_id"] != trd_to_close]
+                    with open(active_file, "w", encoding="utf-8") as f:
+                        json.dump(active_trades, f, indent=2)
+
+                    history = []
+                    if history_file.exists():
+                        with open(history_file, "r", encoding="utf-8") as f:
+                            history = json.load(f)
+                    to_remove["close_date"] = datetime.now().strftime("%Y-%m-%d %H:%M IST")
+                    to_remove["status"] = "CLOSED"
+                    history.append(to_remove)
+                    with open(history_file, "w", encoding="utf-8") as f:
+                        json.dump(history, f, indent=2)
+
+                    st.success(f"Closed Trade {trd_to_close} and logged into trade_history.json!")
+                    st.rerun()
+
+# -----------------------------------------------------------------------------
+# TAB 4: Portfolio & Benchmark Analytics
 # -----------------------------------------------------------------------------
 elif selected_tab == "📈 Portfolio & Benchmark Analytics":
     st.markdown('<p class="main-title">📈 Portfolio & Benchmark Analytics</p>', unsafe_allow_html=True)
@@ -279,10 +418,7 @@ elif selected_tab == "📈 Portfolio & Benchmark Analytics":
         {"Strategy": "AVPCAfternoonStrategy", "Start Cap": 1000000.0, "End Cap": 3418920.80, "ROI %": "+241.9%", "CAGR %": "+712040.1%", "Max DD %": "5.8%", "Win Rate": "74.5%", "Trades": 161},
     ]
     df_bm = pd.DataFrame(benchmark_data)
-    df_bm.index = range(1, len(df_bm) + 1)
-
-    st.markdown("### Financial Performance Comparison Matrix")
-    st.dataframe(df_bm, use_container_width=True)
+    st.dataframe(df_bm, use_container_width=True, hide_index=True)
 
     st.markdown("### Comparative Portfolio Equity Curves")
     dates = pd.date_range("2026-06-15", periods=60, freq="D")
@@ -299,7 +435,7 @@ elif selected_tab == "📈 Portfolio & Benchmark Analytics":
     st.plotly_chart(fig_curves, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 4: Risk & Audit Trail
+# TAB 5: Risk & Audit Trail
 # -----------------------------------------------------------------------------
 elif selected_tab == "🛡️ Risk & Audit Trail":
     st.markdown('<p class="main-title">🛡️ Risk & Audit Trail</p>', unsafe_allow_html=True)
