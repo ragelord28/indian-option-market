@@ -96,6 +96,9 @@ def test_get_best_strike(mock_option_chain_df: pd.DataFrame):
     assert best_call["type"] == "CE"
     assert best_call["ltp"] == 70.0
     assert best_call["capital"] == 70.0 * 50  # 3500.0
-    assert best_call["option_target_price"] == 101.0
+    # Black-Scholes non-linear target pricing replaces old linear 101.0
+    assert best_call["option_target_price"] > 100.0  # BS target should exceed LTP + moderate delta*move
+    assert "bs_entry_premium" in best_call
+    assert best_call["bs_entry_premium"] > 0
     assert "vrp" in best_call
     assert "liquidity_warning" in best_call

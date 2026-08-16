@@ -1,12 +1,14 @@
 """
 Agent 1.5 Morning Radar — Real-Time Pre-Market Risk & Trigger Engine.
 
-Evaluates shortlisted D-1 watchlist candidates against 3 mandatory Risk Guards:
+Evaluates shortlisted D-1 watchlist candidates against mandatory Risk Guards:
 1. Sector Limit Guard: Max 1 active setup per sector.
 2. Event Risk Blackout Guard: Vetoes stocks with earnings/binary events within 48h.
 3. 09:15 AM Gap Veto Guard: Vetoes setups breaching 1.5x ATR gap limits.
+4. ORB Width Guard: Vetoes setups with overly narrow or exhausted ranges.
 
-Evaluates 09:30 AM ORB Trigger Status (TRIGGERED vs AWAITING_ORB),
+Evaluates 09:30 AM ORB Trigger Status using 15m candle close logic,
+manages a conviction-based priority queue (max 5 slots),
 and builds complete multi-leg execution tickets for all non-vetoed candidates.
 """
 
@@ -119,9 +121,28 @@ def run_morning_radar(
                     veto_reason = gap_msg
 
         if status == "AWAITING_ORB":
+            # Guard 4: ORB Width Check
+            orb_high = item.get("orb_high", close_p * 1.005)
+            orb_low = item.get("orb_low", close_p * 0.995)
+            orb_width = orb_high - orb_low
+            if orb_width < 0.3 * atr14:
+                status = "VETOED_ORB_CHOP"
+                veto_reason = "Range too narrow / low volume chop"
+            elif orb_width > 1.5 * atr14:
+                status = "VETOED_ORB_EXHAUSTED"
+                veto_reason = "Range too wide / entry exhausted"
+
+        if status == "AWAITING_ORB":
             sector_counts[sec] = sector_counts.get(sec, 0) + 1
-            # Check 09:30 ORB Trigger (Top 3 items simulate Triggered status)
-            if idx <= 3 or item.get("simulated_triggered", False):
+            
+            # Check 09:30 ORB Trigger (15m Candle Close)
+            candle_close = item.get("candle_close", close_p)
+            rvol = item.get("rvol", 1.0)
+            
+            is_long_trigger = (candle_close > orb_high + (0.001 * close_p)) and (rvol >= 1.3)
+            is_short_trigger = (candle_close < orb_low - (0.001 * close_p)) and (rvol >= 1.3)
+            
+            if is_long_trigger or is_short_trigger or item.get("simulated_triggered", False):
                 status = "TRIGGERED"
 
         # Attach Strategy Execution Ticket
@@ -163,6 +184,16 @@ def run_morning_radar(
                 "execution_ticket": ticket,
             }
         )
+
+    # Conviction-Based Priority Queue
+    triggered_items = [item for item in radar_items if item["status"] == "TRIGGERED"]
+    triggered_items.sort(key=lambda x: x.get("conviction_score", 80.0), reverse=True)
+    
+    max_slots = 5
+    for i, item in enumerate(triggered_items):
+        if i >= max_slots:
+            item["status"] = "QUEUED_NO_SLOT"
+            item["veto_reason"] = "All 5 portfolio slots allocated to higher conviction setups"
 
     output_data = {
         "timestamp": datetime.now().isoformat(),
