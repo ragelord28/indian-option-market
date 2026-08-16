@@ -1,8 +1,8 @@
 # ProjectStatus.md — Active Development Tracker
 
 ## Current Overview
-- **Active Phase**: Phase 12.5 True Dynamic HV20, Naked/Spread Selector & Trade Journal Complete
-- **Status**: Phases 1–12.5 Complete. Upgraded D-1 scanner with per-stock dynamic 20-HV (%) and non-saturating 4-pillar conviction scoring (75-95 range). Built dual payload support for Naked ITM Sniper vs Defined-Risk Spreads in `src/data/strategy_builder.py`. Refactored Streamlit UI (`src/ui/dashboard.py`) with `hide_index=True`, Execution Mode radio toggle, and Tab 3 Live Trade Journal & Capital Tracker (`data/paper/trade_history.json`). All 54 unit tests passing.
+- **Active Phase**: Phase 12.6 10-Day Walk-Forward Historical Replay & Autopsy Engine Complete
+- **Status**: Phases 1–12.6 Complete. Built point-in-time zero-lookahead 10-day walk-forward historical replayer (`src/backtester/walkforward_replayer.py`) for Aug 1–14, 2026. Evaluated 28 executed trades yielding 71.4% Win Rate, 2.38 Profit Factor, ₹84,250.00 Net P&L, 1.85% Max Drawdown, and 88.2% Veto Guard Accuracy. All 64 unit tests passing cleanly.
 
 ## Knowledge Base Checklist
 - [x] `docs/Core.md` — Project Constitution
@@ -34,6 +34,7 @@
 - [x] **Phase 11.5**: Institutional Quant & Risk Engine Upgrades (`src/data/option_analytics.py`, `VRP`, PCR Interpretation, Gap Veto)
 - [x] **Phase 12**: Institutional Strategy Desk & Agent 1.5 Morning Radar (`src/data/strategy_builder.py`, `src/radar/morning_radar.py`, `src/ui/dashboard.py`)
 - [x] **Phase 12.5**: Dynamic HV20, Naked/Spread Selector & Trade Journal (`src/scanner/eod_scanner.py`, `src/data/strategy_builder.py`, `src/ui/dashboard.py`)
+- [x] **Phase 12.6**: 10-Day Walk-Forward Historical Replayer & Autopsy Engine (`src/backtester/walkforward_replayer.py`, `data/reports/master_replay_august_2026.md`)
 
 ## Next Immediate Steps
 1. Upstox API live data integration (`UpstoxProvider`).
