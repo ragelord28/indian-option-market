@@ -25,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.scanner.universe import FULL_FNO_UNIVERSE
 from src.data.yahoo_provider import YahooFinanceProvider
 from src.data.option_analytics import calculate_vrp
+from src.data.strategy_builder import build_optimal_strategy
 
 
 def check_morning_gap_veto(
@@ -333,6 +334,64 @@ def run_eod_scanner(
         f.write(md_content)
     with open(archive_md_path, "w", encoding="utf-8") as f:
         f.write(md_content)
+
+    # Reset data/radar/radar_latest.json with clean pre-market state
+    from src.radar.morning_radar import get_sector
+
+    radar_path = Path("data/radar/radar_latest.json")
+    radar_path.parent.mkdir(parents=True, exist_ok=True)
+    radar_items = []
+    sector_counts = {}
+    for idx, c in enumerate(top_candidates, 1):
+        sec = c.get("sector") or get_sector(c["symbol"])
+        bias = "BULLISH" if "BULL" in c.get("regime", "").upper() else (
+            "BEARISH" if "BEAR" in c.get("regime", "").upper() else "RANGEBOUND"
+        )
+        ticket = build_optimal_strategy(
+            symbol=c["symbol"],
+            spot_price=c["close"],
+            bias=bias,
+            ivr=45.0,
+            vrp=c.get("vrp", 2.5),
+            option_chain_df=pd.DataFrame(),
+            lot_size=50,
+            underlying_target=c.get("target"),
+            conviction_score=c.get("conviction_score", 82.0),
+        )
+        radar_items.append(
+            {
+                "#": idx,
+                "symbol": c["symbol"],
+                "sector": sec,
+                "regime": c["regime"],
+                "bias": bias,
+                "suggested_action": c.get("suggested_action", "BUY CALL"),
+                "status": "🟡 AWAITING ORB",
+                "agent15_status": "🟡 AWAITING ORB",
+                "trigger_time": "Pending (09:15-09:30)",
+                "simulated_triggered": False,
+                "veto_reason": None,
+                "close": c["close"],
+                "entry": c["entry"],
+                "stop_loss": c["stop_loss"],
+                "target": c["target"],
+                "trigger_zone": f"₹{c['entry']:,.2f}",
+                "conviction_score": c["conviction_score"],
+                "vrp": c.get("vrp", 2.5),
+                "hv_20": c.get("hv_20", 22.0),
+                "execution_ticket": ticket,
+            }
+        )
+        sector_counts[sec] = sector_counts.get(sec, 0) + 1
+
+    clean_radar_data = {
+        "timestamp": datetime.now().isoformat(),
+        "total_shortlisted": len(top_candidates),
+        "sector_counts": sector_counts,
+        "radar_items": radar_items,
+    }
+    with open(radar_path, "w", encoding="utf-8") as f:
+        json.dump(clean_radar_data, f, indent=2)
 
     print(
         f"Scanner Complete! Qualified {len(top_candidates)}/{len(universe)} stocks with conviction >= {min_conviction_score}."

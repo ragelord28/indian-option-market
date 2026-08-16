@@ -45,9 +45,24 @@ def get_sector(symbol: str) -> str:
     return SECTOR_MAP.get(base_sym, "Diversified")
 
 
+def is_market_session_active(dt: datetime | None = None) -> bool:
+    """
+    Check if current IST time is within live market hours (Mon-Fri after 09:15 AM IST).
+    """
+    if dt is None:
+        dt = datetime.now()
+    if dt.weekday() >= 5:  # Weekend
+        return False
+    time_min = dt.hour * 60 + dt.minute
+    if time_min < 9 * 60 + 15:  # Before 09:15 AM IST
+        return False
+    return True
+
+
 def run_morning_radar(
     watchlist_path: Path | str = Path("data/watchlists/watchlist_latest.json"),
     output_path: Path | str = Path("data/radar/radar_latest.json"),
+    force_session_evaluation: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute Morning Radar Guard checks and attach execution tickets.
@@ -55,6 +70,7 @@ def run_morning_radar(
     Args:
         watchlist_path: Path to latest D-1 watchlist JSON.
         output_path: Path to save output radar JSON.
+        force_session_evaluation: If True, evaluate intraday guards regardless of time of day.
 
     Returns:
         Structured radar output dictionary.
@@ -99,51 +115,60 @@ def run_morning_radar(
         has_event = bool(item.get("has_event_risk", False))
         conv_score = float(item.get("conviction_score", 80.0))
 
-        # Check Guards
+        # Market session active check
+        session_active = (
+            is_market_session_active()
+            or force_session_evaluation
+            or ("candle_close" in item)
+            or ("simulated_open" in item)
+            or ("simulated_triggered" in item)
+        )
+
         veto_reason = None
         status = "AWAITING_ORB"
 
-        # Guard 1: Sector Limit
-        if sector_counts.get(sec, 0) >= 1:
-            status = "VETOED_SECTOR_LIMIT"
-            veto_reason = f"Sector limit reached (Max 1 setup for {sec})"
-        else:
-            # Guard 2: Event Risk Blackout
-            if has_event:
-                status = "VETOED_EVENT"
-                veto_reason = "Binary corporate event / earnings blackout within 48h"
+        if session_active:
+            # Guard 1: Sector Limit
+            if sector_counts.get(sec, 0) >= 1:
+                status = "VETOED_SECTOR_LIMIT"
+                veto_reason = f"Sector limit reached (Max 1 setup for {sec})"
             else:
-                # Guard 3: 09:15 Opening Gap Check
-                sim_open = item.get("simulated_open", close_p)
-                is_gap_vetoed, gap_msg = check_morning_gap_veto(sim_open, close_p, atr14)
-                if is_gap_vetoed:
-                    status = "VETOED_GAP"
-                    veto_reason = gap_msg
+                # Guard 2: Event Risk Blackout
+                if has_event:
+                    status = "VETOED_EVENT"
+                    veto_reason = "Binary corporate event / earnings blackout within 48h"
+                else:
+                    # Guard 3: 09:15 Opening Gap Check
+                    sim_open = item.get("simulated_open", close_p)
+                    is_gap_vetoed, gap_msg = check_morning_gap_veto(sim_open, close_p, atr14)
+                    if is_gap_vetoed:
+                        status = "VETOED_GAP"
+                        veto_reason = gap_msg
 
-        if status == "AWAITING_ORB":
-            # Guard 4: ORB Width Check
-            orb_high = item.get("orb_high", close_p * 1.005)
-            orb_low = item.get("orb_low", close_p * 0.995)
-            orb_width = orb_high - orb_low
-            if orb_width < 0.3 * atr14:
-                status = "VETOED_ORB_CHOP"
-                veto_reason = "Range too narrow / low volume chop"
-            elif orb_width > 1.5 * atr14:
-                status = "VETOED_ORB_EXHAUSTED"
-                veto_reason = "Range too wide / entry exhausted"
+            if status == "AWAITING_ORB":
+                # Guard 4: ORB Width Check
+                orb_high = item.get("orb_high", close_p * 1.005)
+                orb_low = item.get("orb_low", close_p * 0.995)
+                orb_width = orb_high - orb_low
+                if orb_width < 0.3 * atr14:
+                    status = "VETOED_ORB_CHOP"
+                    veto_reason = "Range too narrow / low volume chop"
+                elif orb_width > 1.5 * atr14:
+                    status = "VETOED_ORB_EXHAUSTED"
+                    veto_reason = "Range too wide / entry exhausted"
 
-        if status == "AWAITING_ORB":
-            sector_counts[sec] = sector_counts.get(sec, 0) + 1
-            
-            # Check 09:30 ORB Trigger (15m Candle Close)
-            candle_close = item.get("candle_close", close_p)
-            rvol = item.get("rvol", 1.0)
-            
-            is_long_trigger = (candle_close > orb_high + (0.001 * close_p)) and (rvol >= 1.3)
-            is_short_trigger = (candle_close < orb_low - (0.001 * close_p)) and (rvol >= 1.3)
-            
-            if is_long_trigger or is_short_trigger or item.get("simulated_triggered", False):
-                status = "TRIGGERED"
+            if status == "AWAITING_ORB":
+                sector_counts[sec] = sector_counts.get(sec, 0) + 1
+
+                # Check 09:30 ORB Trigger (15m Candle Close)
+                candle_close = item.get("candle_close", close_p)
+                rvol = item.get("rvol", 1.0)
+
+                is_long_trigger = (candle_close > orb_high + (0.001 * close_p)) and (rvol >= 1.3)
+                is_short_trigger = (candle_close < orb_low - (0.001 * close_p)) and (rvol >= 1.3)
+
+                if is_long_trigger or is_short_trigger or item.get("simulated_triggered", False):
+                    status = "TRIGGERED"
 
         # Attach Strategy Execution Ticket
         bias = "BULLISH" if "BULL" in item.get("regime", "").upper() else (

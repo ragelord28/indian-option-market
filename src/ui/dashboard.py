@@ -95,6 +95,9 @@ if selected_tab == "📊 D-1 Command Center":
     st.markdown('<p class="main-title">📊 D-1 Actionable Command Center</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-title">Pre-market setups evaluated against Sector Limit, Event Blackout, 1.5x ATR Gap Veto, and 09:30 ORB Triggers</p>', unsafe_allow_html=True)
 
+    if not is_market_session_active():
+        st.info("🌙 Outside Live Market Hours: All candidates are in 🟡 AWAITING ORB pre-market state pending 09:15 AM opening bell and 09:30 AM ORB breakout evaluation.")
+
     if not radar_items:
         st.warning("No radar data available. Run D-1 Scanner & Morning Radar first.")
     else:
