@@ -36,7 +36,7 @@ from src.data import (
     build_optimal_strategy,
 )
 from src.radar.morning_radar import run_morning_radar
-from src.scanner.eod_scanner import check_morning_gap_veto
+from src.scanner.eod_scanner import run_eod_scanner, check_morning_gap_veto
 
 
 def is_market_session_active() -> bool:
@@ -56,6 +56,49 @@ def is_market_session_active() -> bool:
     market_open = time(9, 15)
     market_close = time(15, 30)
     return market_open <= now.time() <= market_close
+
+
+def load_watchlist_data() -> dict:
+    """
+    Load real D-1 watchlist and radar data from data/watchlists/watchlist_latest.json
+    and data/radar/radar_latest.json.
+
+    If data/watchlists/watchlist_latest.json does not exist or is empty,
+    automatically invokes run_eod_scanner() to generate real data dynamically.
+    """
+    wl_path = Path("data/watchlists/watchlist_latest.json")
+    if not wl_path.exists() or wl_path.stat().st_size == 0:
+        run_eod_scanner()
+
+    wl_data = {}
+    if wl_path.exists() and wl_path.stat().st_size > 0:
+        with open(wl_path, "r", encoding="utf-8") as f:
+            wl_data = json.load(f)
+
+    radar_path = Path("data/radar/radar_latest.json")
+    if not radar_path.exists() or radar_path.stat().st_size == 0:
+        run_morning_radar()
+
+    radar_data = {}
+    if radar_path.exists() and radar_path.stat().st_size > 0:
+        with open(radar_path, "r", encoding="utf-8") as f:
+            radar_data = json.load(f)
+
+    radar_items = radar_data.get("radar_items", [])
+
+    # If outside market session, ensure all real candidates display clean pre-market state
+    if not is_market_session_active():
+        for r in radar_items:
+            r["status"] = "AWAITING_ORB"
+            r["agent15_status"] = "🟡 AWAITING ORB (Pre-Market)"
+            r["trigger_time"] = "Pending (09:15-09:30)"
+            r["simulated_triggered"] = False
+
+    return {
+        "watchlist_data": wl_data,
+        "radar_data": radar_data,
+        "radar_items": radar_items,
+    }
 
 
 # Page Configuration
@@ -97,17 +140,11 @@ selected_tab = st.sidebar.radio(
     ],
 )
 
-# Load Radar Data
-radar_path = Path("data/radar/radar_latest.json")
-if not radar_path.exists():
-    run_morning_radar()
-
-radar_data = {}
-if radar_path.exists():
-    with open(radar_path, "r", encoding="utf-8") as f:
-        radar_data = json.load(f)
-
-radar_items = radar_data.get("radar_items", [])
+# Load Real Watchlist & Radar Data
+data_payload = load_watchlist_data()
+wl_data = data_payload["watchlist_data"]
+radar_data = data_payload["radar_data"]
+radar_items = data_payload["radar_items"]
 
 # -----------------------------------------------------------------------------
 # TAB 1: D-1 Command Center
