@@ -2,13 +2,21 @@
 Live Active Trade Monitor & Alert Engine (5-Minute Cycle).
 
 Monitors open positions in `data/paper/active_positions.json`, fetches live quotes
-via batch API calls, evaluates risk alerts (Trailing SL, 13:30 Time Stop, 15:10 Square-Off,
-Target Hit, SL Hit), and updates position metrics.
+via batch API calls, evaluates risk alerts with correct priority ordering:
+  1. EOD_EXIT (15:10 PM mandatory square-off)
+  2. SL_HIT (stop loss breached)
+  3. TARGET_HIT (target reached)
+  4. TRAILING_SL (+1.0x ATR trailing stop)
+  5. TIME_STOP (13:30 PM stagnant trade)
+
+Supports both BULLISH and BEARISH trade directions.
+Uses atomic JSON writes to prevent file corruption.
 """
 
 from datetime import datetime, time
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, Any, List
 import pytz
@@ -21,6 +29,14 @@ DEFAULT_ACTIVE_POS_FILE = Path("data/paper/active_positions.json")
 DEFAULT_ACTIVE_TRADES_FILE = Path("data/paper/active_trades.json")
 
 
+def _atomic_json_write(filepath: Path, data: Any) -> None:
+    """Write JSON data atomically via temp file + os.replace()."""
+    tmp_path = filepath.with_suffix(".json.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(str(tmp_path), str(filepath))
+
+
 def monitor_active_trades(
     active_file: Path | str = DEFAULT_ACTIVE_POS_FILE,
     quotes_override: Dict[str, Dict[str, float]] | None = None,
@@ -28,6 +44,15 @@ def monitor_active_trades(
 ) -> List[Dict[str, Any]]:
     """
     Monitor active paper positions, update current spot/ltp, and evaluate risk alerts.
+
+    Alert priority order (highest to lowest):
+      1. EOD_EXIT — 15:10 PM mandatory square-off
+      2. SL_HIT — stop loss breached
+      3. TARGET_HIT — target price reached
+      4. TRAILING_SL — +1.0x ATR trailing stop trigger
+      5. TIME_STOP — 13:30 PM stagnant trade exit
+
+    Supports both BULLISH and BEARISH trade directions.
 
     Args:
         active_file: Path to active positions JSON.
@@ -62,7 +87,7 @@ def monitor_active_trades(
     if not symbols:
         return []
 
-    # Fetch quotes batch in 1 single call
+    # Fetch equity quotes batch in 1 single call
     if quotes_override is not None:
         quotes = quotes_override
     else:
@@ -93,22 +118,22 @@ def monitor_active_trades(
             continue
 
         sym = pos.get("symbol", "").upper()
+        direction = pos.get("direction", "BULLISH").upper()
         quote = quotes.get(sym, {})
-        live_quote_price = quote.get("ltp", 0.0)
 
+        entry_spot = float(pos.get("entry_spot", pos.get("strike", 0.0)))
         entry_prem = float(pos.get("entry_premium", 0.0))
-        entry_spot = float(pos.get("entry_spot", pos.get("strike", 2500.0)))
+        target_spot = float(pos.get("target_spot", 0.0))
+        sl_spot = float(pos.get("sl_spot", 0.0))
 
-        # Differentiate underlying spot price vs option contract premium
-        if live_quote_price > 200.0:
-            current_spot = live_quote_price
-            current_ltp = float(pos.get("current_ltp", entry_prem))
-        else:
-            current_ltp = live_quote_price if live_quote_price > 0 else float(pos.get("current_ltp", entry_prem))
-            current_spot = float(pos.get("current_spot", entry_spot))
-
-        pos["current_ltp"] = current_ltp
+        # Update current_spot directly from equity batch quote
+        live_ltp = float(quote.get("ltp", 0.0))
+        current_spot = live_ltp if live_ltp > 0 else float(pos.get("current_spot", entry_spot))
         pos["current_spot"] = current_spot
+
+        # Option premium tracking (separate from spot)
+        current_ltp = float(pos.get("current_ltp", entry_prem))
+        pos["current_ltp"] = current_ltp
 
         lots = int(pos.get("quantity_lots", 1))
         lot_sz = int(pos.get("lot_size", 250))
@@ -117,39 +142,50 @@ def monitor_active_trades(
         pnl_rupees = round((current_ltp - entry_prem) * units, 2)
         pos["unrealized_pnl"] = pnl_rupees
 
-        pnl_pct = ((current_ltp - entry_prem) / entry_prem * 100.0) if entry_prem > 0 else 0.0
+        # Spot-based P&L percentage for time stop evaluation
+        spot_pnl_pct = ((current_spot - entry_spot) / entry_spot * 100.0) if entry_spot > 0 else 0.0
+        if direction == "BEARISH":
+            spot_pnl_pct = -spot_pnl_pct  # Invert for bearish
 
         alert_msg = None
         action_type = None
 
-        target_spot = float(pos.get("target_spot", 0.0))
-        sl_spot = float(pos.get("sl_spot", 0.0))
-        target_prem = float(pos.get("target", 0.0))
-        sl_prem = float(pos.get("stop_loss", 0.0))
-
-        # 1. Target Reached Check
-        if (target_spot > 0 and current_spot >= target_spot and target_spot > entry_spot) or (target_prem > 0 and current_ltp >= target_prem and target_prem > entry_prem):
-            alert_msg = "🎯 TARGET HIT: Target spot reached. Book profit on broker!"
-            action_type = "TARGET_HIT"
-
-        # 2. Stop Loss Hit Check
-        elif (sl_spot > 0 and current_spot > 0 and current_spot <= sl_spot and sl_spot < entry_spot) or (sl_prem > 0 and current_ltp > 0 and current_ltp <= sl_prem and sl_prem < entry_prem):
-            alert_msg = "❌ STOP LOSS HIT: Spot breached SL level. Exit on broker immediately."
-            action_type = "SL_HIT"
-
-        # 3. Trailing SL Trigger (+1.0x ATR gain or +1.5% spot move)
-        elif (current_spot >= entry_spot * 1.015 or pnl_pct >= 15.0) and not pos.get("trailing_sl_active", False):
-            alert_msg = f"🚨 MOVE SL TO ENTRY: Price reached +1.0x ATR (₹{current_spot:,.2f}). Shift broker SL to ₹{entry_spot:,.2f}."
-            action_type = "TRAILING_SL"
-            pos["trailing_sl_active"] = True
-
-        # 4. 15:10 PM Mandatory Square-Off
-        elif current_time >= time_1510:
+        # Priority 1: 15:10 PM Mandatory EOD Square-Off (highest priority)
+        if current_time >= time_1510:
             alert_msg = "🛑 15:10 SQUARE OFF: Market closing in 20 mins. Exit immediately to avoid broker auto-square-off penalty."
             action_type = "EOD_EXIT"
 
-        # 5. 13:30 Time Stop Check (-3% to +3% stagnant trade after 13:30)
-        elif current_time >= time_1330 and -3.0 <= pnl_pct <= 3.0:
+        # Priority 2: Stop Loss Hit
+        elif sl_spot > 0 and current_spot > 0:
+            if direction == "BULLISH" and current_spot <= sl_spot:
+                alert_msg = f"❌ STOP LOSS HIT: Spot ₹{current_spot:,.2f} breached SL ₹{sl_spot:,.2f}. Exit on broker immediately."
+                action_type = "SL_HIT"
+            elif direction == "BEARISH" and current_spot >= sl_spot:
+                alert_msg = f"❌ STOP LOSS HIT: Spot ₹{current_spot:,.2f} breached SL ₹{sl_spot:,.2f}. Exit on broker immediately."
+                action_type = "SL_HIT"
+
+        # Priority 3: Target Reached
+        if alert_msg is None and target_spot > 0 and current_spot > 0:
+            if direction == "BULLISH" and current_spot >= target_spot:
+                alert_msg = "🎯 TARGET HIT: Target spot reached. Book profit on broker!"
+                action_type = "TARGET_HIT"
+            elif direction == "BEARISH" and current_spot <= target_spot:
+                alert_msg = "🎯 TARGET HIT: Target spot reached. Book profit on broker!"
+                action_type = "TARGET_HIT"
+
+        # Priority 4: Trailing SL Trigger (+1.0x ATR / +1.5% spot move)
+        if alert_msg is None and not pos.get("trailing_sl_active", False):
+            if direction == "BULLISH" and current_spot >= entry_spot * 1.015:
+                alert_msg = f"🚨 MOVE SL TO ENTRY: Price reached +1.0x ATR (₹{current_spot:,.2f}). Shift broker SL to ₹{entry_spot:,.2f}."
+                action_type = "TRAILING_SL"
+                pos["trailing_sl_active"] = True
+            elif direction == "BEARISH" and current_spot <= entry_spot * 0.985:
+                alert_msg = f"🚨 MOVE SL TO ENTRY: Price reached +1.0x ATR (₹{current_spot:,.2f}). Shift broker SL to ₹{entry_spot:,.2f}."
+                action_type = "TRAILING_SL"
+                pos["trailing_sl_active"] = True
+
+        # Priority 5: 13:30 Time Stop (-3% to +3% stagnant trade)
+        if alert_msg is None and current_time >= time_1330 and -3.0 <= spot_pnl_pct <= 3.0:
             alert_msg = "⏰ 13:30 TIME STOP: Trade stagnant for 4 hours. Exit on broker to avoid theta decay."
             action_type = "TIME_STOP"
 
@@ -161,19 +197,19 @@ def monitor_active_trades(
                     "trade_id": pos.get("trade_id", "TRD-000"),
                     "symbol": sym,
                     "strategy": pos.get("strategy", "Option Strategy"),
+                    "direction": direction,
                     "action_alert": alert_msg,
                     "action_type": action_type,
-                    "current_ltp": current_spot,
+                    "current_spot": current_spot,
+                    "current_ltp": current_ltp,
                     "unrealized_pnl": pnl_rupees,
                 }
             )
 
-    # Save updated metrics back to active positions files
+    # Atomic JSON writes to prevent file corruption
     try:
-        with open(DEFAULT_ACTIVE_POS_FILE, "w", encoding="utf-8") as f:
-            json.dump(positions, f, indent=2)
-        with open(DEFAULT_ACTIVE_TRADES_FILE, "w", encoding="utf-8") as f:
-            json.dump(positions, f, indent=2)
+        _atomic_json_write(DEFAULT_ACTIVE_POS_FILE, positions)
+        _atomic_json_write(DEFAULT_ACTIVE_TRADES_FILE, positions)
     except Exception as err:
         logger.error(f"Error persisting updated positions: {err}")
 

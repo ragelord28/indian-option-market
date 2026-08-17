@@ -100,8 +100,10 @@ def fetch_live_15m_data(symbol: str) -> Dict[str, Any] | None:
         candle_close = float(latest_bar["close"])
 
         vol_0 = float(bar_0.get("volume", 0.0))
-        mean_vol = float(df["volume"].mean()) if "volume" in df and len(df) > 0 else 0.0
-        rvol = float(vol_0 / (mean_vol + 1e-5)) if mean_vol > 0 else 1.0
+        # RVOL against 20-day historical average 15m volume (25 bars per 6.25h session)
+        # This is overridden by the caller if volume_20d_avg is available in the watchlist item
+        mean_vol = float(df["volume"].mean()) if "volume" in df and len(df) > 1 else 0.0
+        rvol = float(vol_0 / max(mean_vol, 1.0)) if mean_vol > 0 else 1.0
 
         return {
             "orb_high": round(orb_high, 2),
@@ -109,6 +111,7 @@ def fetch_live_15m_data(symbol: str) -> Dict[str, Any] | None:
             "current_spot": round(current_spot, 2),
             "candle_close": round(candle_close, 2),
             "rvol": round(rvol, 2),
+            "bar_0_vol": round(vol_0, 0),
         }
     except Exception:
         return None
@@ -188,11 +191,13 @@ def run_morning_radar(
             close_p = live_info["current_spot"]
             candle_close = live_info["candle_close"]
             rvol = live_info["rvol"]
+            bar_0_vol = live_info.get("bar_0_vol", 0.0)
         else:
             orb_high = item.get("orb_high", round(close_p * 1.005, 2))
             orb_low = item.get("orb_low", round(close_p * 0.995, 2))
             candle_close = item.get("candle_close", close_p)
             rvol = float(item.get("rvol", 1.0))
+            bar_0_vol = 0.0
 
         veto_reason = None
         status = "AWAITING_ORB"
@@ -228,15 +233,23 @@ def run_morning_radar(
             if status == "AWAITING_ORB":
                 sector_counts[sec] = sector_counts.get(sec, 0) + 1
 
-                # Check 09:30 ORB Trigger (15m Candle Close)
-                is_long_trigger = (candle_close > orb_high + (0.001 * close_p)) and (rvol >= 1.3)
-                is_short_trigger = (candle_close < orb_low - (0.001 * close_p)) and (rvol >= 1.3)
+                # RVOL benchmark: use 20-day historical avg volume if available
+                vol_20d = float(item.get("volume_20d_avg", 0.0))
+                if vol_20d > 0:
+                    expected_15m_vol = vol_20d / 25.0  # 25 fifteen-minute bars per 6.25h session
+                    rvol = round(float(bar_0_vol / max(expected_15m_vol, 1.0)), 2) if bar_0_vol > 0 else rvol
 
-                if is_long_trigger or is_short_trigger or item.get("simulated_triggered", False):
-                    status = "TRIGGERED"
-                elif session_active and is_past_1130_am() and ("candle_close" not in item):
+                # 11:30 AM State Lock: check expiry BEFORE evaluating triggers
+                if session_active and is_past_1130_am() and ("candle_close" not in item) and not item.get("simulated_triggered", False):
                     status = "EXPIRED_NO_TRIGGER"
                     veto_reason = "Session passed 11:30 AM without breakout. Setup void for today."
+                else:
+                    # Check 09:30 ORB Trigger (15m Candle Close)
+                    is_long_trigger = (candle_close > orb_high + (0.001 * close_p)) and (rvol >= 1.3)
+                    is_short_trigger = (candle_close < orb_low - (0.001 * close_p)) and (rvol >= 1.3)
+
+                    if is_long_trigger or is_short_trigger or item.get("simulated_triggered", False):
+                        status = "TRIGGERED"
 
         # Attach Strategy Execution Ticket
         bias = "BULLISH" if "BULL" in item.get("regime", "").upper() else (

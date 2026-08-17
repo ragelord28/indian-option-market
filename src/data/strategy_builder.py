@@ -101,9 +101,54 @@ def _build_ticket_from_legs(
         bid = float(r.get(bid_key, mid_ltp * 0.99))
 
         delta_val = float(r.get(delta_key, 0.65 if opt_type == "CE" else -0.65))
-        theta_val = -0.5 if act == "BUY" else +0.5
-        vega_val = 0.8 if act == "BUY" else -0.8
-        gamma_val = 0.02 if act == "BUY" else -0.02
+
+        # Dynamic Black-Scholes Greeks from analytical formulas
+        iv_key = "call_iv" if opt_type == "CE" else "put_iv"
+        sigma = float(r.get(iv_key, 0.20))
+        sigma = max(sigma, 0.01)  # Prevent division by zero
+        dte = float(get_days_to_monthly_expiry())
+        T = max(dte, 0.5) / 365.0  # Annualized, min 0.5 day to avoid div-by-zero
+        r_rate = 0.065  # Risk-free rate (India 10Y ~6.5%)
+        sqrt_T = float(np.sqrt(T))
+
+        # d1, d2 for Black-Scholes
+        if strike > 0 and sigma > 0:
+            d1 = (np.log(spot_price / strike) + (r_rate + 0.5 * sigma**2) * T) / (sigma * sqrt_T)
+            d2 = d1 - sigma * sqrt_T
+            from scipy.stats import norm
+            nd1 = float(norm.pdf(d1))
+
+            # Gamma (same for calls and puts)
+            gamma_val = float(nd1 / (spot_price * sigma * sqrt_T))
+
+            # Vega (same for calls and puts, per 1% IV move)
+            vega_val = float(spot_price * nd1 * sqrt_T / 100.0)
+
+            # Theta (per calendar day)
+            if opt_type == "CE":
+                theta_val = float(
+                    -(spot_price * nd1 * sigma) / (2.0 * sqrt_T * 365.0)
+                    - r_rate * strike * np.exp(-r_rate * T) * float(norm.cdf(d2)) / 365.0
+                )
+            else:
+                theta_val = float(
+                    -(spot_price * nd1 * sigma) / (2.0 * sqrt_T * 365.0)
+                    + r_rate * strike * np.exp(-r_rate * T) * float(norm.cdf(-d2)) / 365.0
+                )
+        else:
+            gamma_val = 0.02 if act == "BUY" else -0.02
+            vega_val = 0.8 if act == "BUY" else -0.8
+            theta_val = -0.5 if act == "BUY" else +0.5
+
+        # Flip sign for SELL legs
+        if act == "SELL":
+            gamma_val = -abs(gamma_val)
+            vega_val = -abs(vega_val)
+            theta_val = abs(theta_val)  # Theta is positive for sold options (collect decay)
+        else:
+            gamma_val = abs(gamma_val)
+            vega_val = abs(vega_val)
+            theta_val = -abs(theta_val)  # Theta is negative for bought options (pay decay)
 
         if ask > 0 and mid_ltp > 0:
             spr = ((ask - bid) / mid_ltp) * 100.0

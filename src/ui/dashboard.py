@@ -232,15 +232,21 @@ if "active_trades" not in st.session_state:
                 "trade_id": "TRD-1001",
                 "symbol": "RELIANCE",
                 "strategy": "Bull Call Spread",
+                "direction": "BULLISH",
                 "entry_date": "2026-08-14 09:30 IST",
                 "strike": 2450.0,
                 "entry_premium": 70.0,
+                "entry_spot": 2450.0,
+                "target_spot": 2523.5,
+                "sl_spot": 2401.0,
+                "current_spot": 2450.0,
                 "quantity_lots": 2,
                 "lot_size": 250,
                 "margin_blocked": 35000.0,
                 "current_ltp": 78.5,
                 "stop_loss": 50.0,
                 "target": 110.0,
+                "trailing_sl_active": False,
                 "status": "OPEN",
             }
         ]
@@ -252,6 +258,23 @@ if "active_trades" not in st.session_state:
 
 active_trades = st.session_state.active_trades
 used_slots = len(active_trades)
+
+# Global Alert Evaluation (runs on every page load across all tabs)
+active_alerts = monitor_active_trades(active_file=active_pos_file)
+if active_alerts:
+    has_chime_played = False
+    for alt in active_alerts:
+        atype = alt.get("action_type", "")
+        amsg = alt.get("action_alert", "")
+        if atype in ("SL_HIT", "EOD_EXIT"):
+            st.error(f"🚨 **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
+        elif atype in ("TARGET_HIT", "TRAILING_SL"):
+            st.success(f"🎉 **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
+        else:
+            st.warning(f"⏰ **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
+        if not has_chime_played:
+            st.markdown('<audio autoplay style="display:none;"><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
+            has_chime_played = True
 
 # Sidebar 5-Min Auto-Refresh Toggle
 st.sidebar.markdown("---")
@@ -488,15 +511,26 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
             margin_req = float(ticket.get("basket_margin", net_mid))
             be_spot = float(ticket.get("breakeven", spot_v * 0.98))
 
+            # Derive direction from strategy name
+            strat_nm = ticket["strategy_name"]
+            is_bearish = ("Bear" in strat_nm or ("Put" in strat_nm and "Credit" not in strat_nm))
+            direction = "BEARISH" if is_bearish else "BULLISH"
+
+            # Guaranteed unique trade ID (max existing + 1)
+            existing_ids = [int(t.get("trade_id", "TRD-1000").split("-")[1]) for t in active_trades if "-" in t.get("trade_id", "")]
+            next_id = max(existing_ids + [1000]) + 1
+
             new_trd = {
-                "trade_id": f"TRD-{1001 + len(active_trades)}",
+                "trade_id": f"TRD-{next_id}",
                 "symbol": selected_symbol.upper(),
-                "strategy": ticket["strategy_name"],
+                "strategy": strat_nm,
+                "direction": direction,
                 "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M IST"),
                 "strike": spot_v,
                 "entry_premium": prem_unit if prem_unit > 0 else 50.0,
                 "entry_spot": spot_v,
-                "target_spot": round(spot_v * 1.03, 2),
+                "current_spot": spot_v,
+                "target_spot": round(spot_v * 1.03, 2) if direction == "BULLISH" else round(spot_v * 0.97, 2),
                 "sl_spot": round(be_spot, 2),
                 "quantity_lots": 1,
                 "lot_size": lot_sz,
@@ -504,6 +538,7 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
                 "current_ltp": prem_unit if prem_unit > 0 else 50.0,
                 "stop_loss": round(be_spot, 2),
                 "target": round(spot_v * 1.03, 2),
+                "trailing_sl_active": False,
                 "status": "OPEN",
             }
             active_trades.append(new_trd)
@@ -512,7 +547,7 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
                 json.dump(active_trades, f, indent=2)
             with open(active_trades_file, "w", encoding="utf-8") as f:
                 json.dump(active_trades, f, indent=2)
-            st.success(f"Successfully logged Trade {new_trd['trade_id']} ({selected_symbol} - {ticket['strategy_name']}) to Journal!")
+            st.success(f"Successfully logged Trade {new_trd['trade_id']} ({selected_symbol} - {strat_nm}) to Journal!")
             st.rerun()
 
 # -----------------------------------------------------------------------------
@@ -522,10 +557,9 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
     st.markdown('<p class="main-title">💼 Live Trade Journal & Portfolio Capital Tracker</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-title">Real-time margin slot management, active trade tracking, and manual order execution logger</p>', unsafe_allow_html=True)
 
-    # Run active trade watcher & evaluate alerts
-    active_alerts = monitor_active_trades(active_file=active_pos_file)
+    # Alerts are now evaluated globally above — display any active alerts here too
     if active_alerts:
-        has_chime_played = False
+        st.markdown("### 🔔 Active Trade Alerts")
         for alt in active_alerts:
             atype = alt.get("action_type", "")
             amsg = alt.get("action_alert", "")
@@ -535,10 +569,6 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
                 st.success(f"🎉 **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
             else:
                 st.warning(f"⏰ **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
-
-            if not has_chime_played:
-                st.markdown('<audio autoplay style="display:none;"><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
-                has_chime_played = True
 
     # Capital Summary Calculation
     total_capital = 1000000.0
