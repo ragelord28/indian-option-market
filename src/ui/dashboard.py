@@ -38,6 +38,7 @@ from src.data import (
 )
 from src.data.upstox_auth import fetch_and_save_token, get_login_url
 from src.radar.morning_radar import run_morning_radar
+from src.radar.trade_watcher import monitor_active_trades
 from src.scanner.eod_scanner import run_eod_scanner, check_morning_gap_veto
 from src.scanner.universe import get_lot_size
 
@@ -210,6 +211,54 @@ data_payload = load_watchlist_data()
 wl_data = data_payload["watchlist_data"]
 radar_data = data_payload["radar_data"]
 radar_items = data_payload["radar_items"]
+
+# Global Paper Positions Setup & Auto-Refresh Toggle
+journal_dir = Path("data/paper")
+journal_dir.mkdir(parents=True, exist_ok=True)
+active_pos_file = journal_dir / "active_positions.json"
+active_trades_file = journal_dir / "active_trades.json"
+history_file = journal_dir / "trade_history.json"
+
+if "active_trades" not in st.session_state:
+    target_load_file = active_pos_file if active_pos_file.exists() and active_pos_file.stat().st_size > 0 else (
+        active_trades_file if active_trades_file.exists() and active_trades_file.stat().st_size > 0 else None
+    )
+    if target_load_file:
+        with open(target_load_file, "r", encoding="utf-8") as f:
+            st.session_state.active_trades = json.load(f)
+    else:
+        initial_trades = [
+            {
+                "trade_id": "TRD-1001",
+                "symbol": "RELIANCE",
+                "strategy": "Bull Call Spread",
+                "entry_date": "2026-08-14 09:30 IST",
+                "strike": 2450.0,
+                "entry_premium": 70.0,
+                "quantity_lots": 2,
+                "lot_size": 250,
+                "margin_blocked": 35000.0,
+                "current_ltp": 78.5,
+                "stop_loss": 50.0,
+                "target": 110.0,
+                "status": "OPEN",
+            }
+        ]
+        st.session_state.active_trades = initial_trades
+        with open(active_pos_file, "w", encoding="utf-8") as f:
+            json.dump(initial_trades, f, indent=2)
+        with open(active_trades_file, "w", encoding="utf-8") as f:
+            json.dump(initial_trades, f, indent=2)
+
+active_trades = st.session_state.active_trades
+used_slots = len(active_trades)
+
+# Sidebar 5-Min Auto-Refresh Toggle
+st.sidebar.markdown("---")
+auto_refresh = st.sidebar.checkbox("🔄 Enable 5-Min Live Auto-Refresh", value=False)
+if auto_refresh:
+    st.markdown('<meta http-equiv="refresh" content="300">', unsafe_allow_html=True)
+    st.sidebar.caption("⏱️ Auto-refreshing every 5 mins (Rate-Limit Safe: 0.03% API capacity)")
 
 # -----------------------------------------------------------------------------
 # TAB 1: D-1 Command Center
@@ -426,6 +475,46 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
     mc4.metric("Put-Call Ratio (PCR)", "1.18", delta="Bullish Support")
     mc5.metric("Max Pain Strike", f"₹{spot_val:,.2f}")
 
+    st.markdown("---")
+    st.markdown("### 📥 Order Ticket Execution & Journal Logger")
+    if st.button("📥 Execute & Log to Journal (Tab 3)", type="primary"):
+        if used_slots >= 5:
+            st.error("Cannot log trade: Maximum 5 concurrent margin slots reached!")
+        else:
+            spot_v = float(selected_item["close"]) if selected_item else 2500.0
+            lot_sz = ticket.get("lot_size", get_lot_size(selected_symbol))
+            net_mid = abs(ticket.get("net_mid_cost", 100.0))
+            prem_unit = round(net_mid / lot_sz, 2) if lot_sz > 0 else round(net_mid, 2)
+            margin_req = float(ticket.get("basket_margin", net_mid))
+            be_spot = float(ticket.get("breakeven", spot_v * 0.98))
+
+            new_trd = {
+                "trade_id": f"TRD-{1001 + len(active_trades)}",
+                "symbol": selected_symbol.upper(),
+                "strategy": ticket["strategy_name"],
+                "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M IST"),
+                "strike": spot_v,
+                "entry_premium": prem_unit if prem_unit > 0 else 50.0,
+                "entry_spot": spot_v,
+                "target_spot": round(spot_v * 1.03, 2),
+                "sl_spot": round(be_spot, 2),
+                "quantity_lots": 1,
+                "lot_size": lot_sz,
+                "margin_blocked": margin_req if margin_req > 0 else round(prem_unit * lot_sz, 2),
+                "current_ltp": prem_unit if prem_unit > 0 else 50.0,
+                "stop_loss": round(be_spot, 2),
+                "target": round(spot_v * 1.03, 2),
+                "status": "OPEN",
+            }
+            active_trades.append(new_trd)
+            st.session_state.active_trades = active_trades
+            with open(active_pos_file, "w", encoding="utf-8") as f:
+                json.dump(active_trades, f, indent=2)
+            with open(active_trades_file, "w", encoding="utf-8") as f:
+                json.dump(active_trades, f, indent=2)
+            st.success(f"Successfully logged Trade {new_trd['trade_id']} ({selected_symbol} - {ticket['strategy_name']}) to Journal!")
+            st.rerun()
+
 # -----------------------------------------------------------------------------
 # TAB 3: Live Trade Journal & Capital Tracker
 # -----------------------------------------------------------------------------
@@ -433,45 +522,23 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
     st.markdown('<p class="main-title">💼 Live Trade Journal & Portfolio Capital Tracker</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-title">Real-time margin slot management, active trade tracking, and manual order execution logger</p>', unsafe_allow_html=True)
 
-    journal_dir = Path("data/paper")
-    journal_dir.mkdir(parents=True, exist_ok=True)
-    active_pos_file = journal_dir / "active_positions.json"
-    active_trades_file = journal_dir / "active_trades.json"
-    history_file = journal_dir / "trade_history.json"
+    # Run active trade watcher & evaluate alerts
+    active_alerts = monitor_active_trades(active_file=active_pos_file)
+    if active_alerts:
+        has_chime_played = False
+        for alt in active_alerts:
+            atype = alt.get("action_type", "")
+            amsg = alt.get("action_alert", "")
+            if atype in ("SL_HIT", "EOD_EXIT"):
+                st.error(f"🚨 **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
+            elif atype in ("TARGET_HIT", "TRAILING_SL"):
+                st.success(f"🎉 **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
+            else:
+                st.warning(f"⏰ **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
 
-    # Load / Initialize active trades from disk & session_state
-    if "active_trades" not in st.session_state:
-        target_load_file = active_pos_file if active_pos_file.exists() and active_pos_file.stat().st_size > 0 else (
-            active_trades_file if active_trades_file.exists() and active_trades_file.stat().st_size > 0 else None
-        )
-        if target_load_file:
-            with open(target_load_file, "r", encoding="utf-8") as f:
-                st.session_state.active_trades = json.load(f)
-        else:
-            initial_trades = [
-                {
-                    "trade_id": "TRD-1001",
-                    "symbol": "RELIANCE",
-                    "strategy": "Bull Call Spread",
-                    "entry_date": "2026-08-14 09:30 IST",
-                    "strike": 2450.0,
-                    "entry_premium": 70.0,
-                    "quantity_lots": 2,
-                    "lot_size": 250,
-                    "margin_blocked": 35000.0,
-                    "current_ltp": 78.5,
-                    "stop_loss": 50.0,
-                    "target": 110.0,
-                    "status": "OPEN",
-                }
-            ]
-            st.session_state.active_trades = initial_trades
-            with open(active_pos_file, "w", encoding="utf-8") as f:
-                json.dump(initial_trades, f, indent=2)
-            with open(active_trades_file, "w", encoding="utf-8") as f:
-                json.dump(initial_trades, f, indent=2)
-
-    active_trades = st.session_state.active_trades
+            if not has_chime_played:
+                st.markdown('<audio autoplay style="display:none;"><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
+                has_chime_played = True
 
     # Capital Summary Calculation
     total_capital = 1000000.0

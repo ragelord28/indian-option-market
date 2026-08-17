@@ -326,3 +326,93 @@ class UpstoxProvider(BaseDataProvider):
 
         df = pd.DataFrame(rows)
         return df
+
+    def fetch_live_quotes_batch(self, symbols: list[str]) -> dict:
+        """
+        Fetch real-time live quotes for a batch of symbols in a SINGLE rate-limit safe API request.
+
+        Args:
+            symbols: List of ticker symbols (e.g. ['RELIANCE', 'HAL', 'GNFC']).
+
+        Returns:
+            Dictionary mapping clean symbol -> {'ltp': float, 'volume': float, 'high': float, 'low': float, 'close': float, 'open': float}
+        """
+        if not symbols:
+            return {}
+
+        clean_symbols = [s.replace(".NS", "").replace("^", "").strip().upper() for s in symbols]
+        instrument_keys = [self._get_instrument_key(s) for s in clean_symbols]
+        key_to_symbol = {ik: sym for ik, sym in zip(instrument_keys, clean_symbols)}
+
+        results = {}
+
+        # 1. Primary Attempt via Upstox API v2 Full Market Quote endpoint
+        if self.access_token and self.access_token not in ("your_access_token_here", ""):
+            try:
+                url = f"{UPSTOX_BASE_URL}/market-quote/quotes"
+                headers = {
+                    "accept": "application/json",
+                    "Authorization": f"Bearer {self.access_token}",
+                }
+                params = {"instrument_key": ",".join(instrument_keys)}
+                res = requests.get(url, headers=headers, params=params, timeout=8)
+                if res.status_code == 200:
+                    data = res.json().get("data", {})
+                    for ik, qdata in data.items():
+                        clean_sym = key_to_symbol.get(ik, ik.split("|")[-1])
+                        ohlc = qdata.get("ohlc", {})
+                        ltp_val = float(qdata.get("last_price", 0.0) or ohlc.get("close", 0.0))
+                        results[clean_sym] = {
+                            "ltp": round(ltp_val, 2),
+                            "volume": float(qdata.get("volume", 0.0)),
+                            "high": float(ohlc.get("high", 0.0)),
+                            "low": float(ohlc.get("low", 0.0)),
+                            "close": float(ohlc.get("close", 0.0)),
+                            "open": float(ohlc.get("open", 0.0)),
+                        }
+            except Exception as err:
+                logger.warning(f"Upstox batch quote fetch error: {err}. Falling back to yfinance.")
+
+        # 2. Fallback to yfinance if any symbol is missing from results
+        missing_symbols = [s for s in clean_symbols if s not in results or results[s]["ltp"] <= 0]
+        if missing_symbols:
+            try:
+                import yfinance as yf
+                yf_tickers = [f"{s}.NS" if not s.endswith(".NS") and "^" not in s else s for s in missing_symbols]
+                df_yf = yf.download(yf_tickers, period="1d", interval="1m", progress=False)
+                if df_yf is not None and not df_yf.empty:
+                    for sym, yf_t in zip(missing_symbols, yf_tickers):
+                        try:
+                            if isinstance(df_yf.columns, pd.MultiIndex):
+                                sub_df = df_yf.xs(yf_t, axis=1, level=1) if yf_t in df_yf.columns.levels[1] else pd.DataFrame()
+                            else:
+                                sub_df = df_yf
+                            if not sub_df.empty:
+                                last_row = sub_df.dropna(how="all").iloc[-1]
+                                ltp = float(last_row.get("Close", last_row.get("Adj Close", 0.0)))
+                                results[sym] = {
+                                    "ltp": round(ltp, 2),
+                                    "volume": float(last_row.get("Volume", 0.0)),
+                                    "high": float(last_row.get("High", ltp)),
+                                    "low": float(last_row.get("Low", ltp)),
+                                    "close": round(ltp, 2),
+                                    "open": float(last_row.get("Open", ltp)),
+                                }
+                        except Exception:
+                            pass
+            except Exception as err:
+                logger.warning(f"yfinance batch quote fallback error: {err}")
+
+        # Ensure every requested symbol gets a dict payload
+        for s in clean_symbols:
+            if s not in results:
+                results[s] = {"ltp": 0.0, "volume": 0.0, "high": 0.0, "low": 0.0, "close": 0.0, "open": 0.0}
+
+        return results
+
+
+def fetch_live_quotes_batch(symbols: list[str], provider: UpstoxProvider = None) -> dict:
+    """Standalone module-level helper for fetching batch live quotes."""
+    if provider is None:
+        provider = UpstoxProvider()
+    return provider.fetch_live_quotes_batch(symbols)

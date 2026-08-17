@@ -7,7 +7,7 @@ standard schema validation according to ADR-005, and option chain analytics.
 
 from src.data.base_provider import BaseDataProvider, validate_schema
 from src.data.yahoo_provider import YahooFinanceProvider
-from src.data.upstox_provider import UpstoxProvider
+from src.data.upstox_provider import UpstoxProvider, fetch_live_quotes_batch
 from src.data.option_analytics import (
     calculate_pcr,
     interpret_pcr,
@@ -23,6 +23,7 @@ __all__ = [
     "validate_schema",
     "YahooFinanceProvider",
     "UpstoxProvider",
+    "fetch_live_quotes_batch",
     "calculate_pcr",
     "interpret_pcr",
     "calculate_vrp",
