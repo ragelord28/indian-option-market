@@ -12,8 +12,9 @@ manages a conviction-based priority queue (max 5 slots),
 and builds complete multi-leg execution tickets for all non-vetoed candidates.
 """
 
-from datetime import datetime
+from datetime import datetime, date
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Dict, Any, List
@@ -58,16 +59,33 @@ def is_past_1130_am(dt: datetime | None = None) -> bool:
 
 def fetch_live_15m_data(symbol: str) -> Dict[str, Any] | None:
     """
-    Fetch today's actual live 15m intraday bars for symbol via YahooFinanceProvider or yfinance.
-    Returns dict with orb_high, orb_low, candle_close, current_spot, rvol if successful, else None.
+    Fetch today's actual live 15m intraday bars for symbol via UpstoxProvider (primary)
+    or fallback to yfinance.
     """
-    try:
-        import yfinance as yf
-        ticker_sym = symbol if symbol.endswith(".NS") or "^" in symbol else f"{symbol}.NS"
-        df = yf.download(ticker_sym, period="1d", interval="15m", progress=False)
-        if df is None or df.empty or len(df) == 0:
-            return None
+    df = None
+    upstox_token_file = Path("data/upstox_token.json")
+    if os.getenv("UPSTOX_ACCESS_TOKEN") or (upstox_token_file.exists() and upstox_token_file.stat().st_size > 0):
+        try:
+            from src.data.upstox_provider import UpstoxProvider
+            provider = UpstoxProvider()
+            today_str = date.today().strftime("%Y-%m-%d")
+            df = provider.fetch_historical_data(symbol, start_date=today_str, timeframe="15m")
+        except Exception:
+            df = None
 
+    if df is None or df.empty:
+        try:
+            import yfinance as yf
+            print("⚠️ Upstox token offline; using fallback feed")
+            ticker_sym = symbol if symbol.endswith(".NS") or "^" in symbol else f"{symbol}.NS"
+            df = yf.download(ticker_sym, period="1d", interval="15m", progress=False)
+        except Exception:
+            df = None
+
+    if df is None or df.empty or len(df) == 0:
+        return None
+
+    try:
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [c[0].lower() for c in df.columns]
         else:

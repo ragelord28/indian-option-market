@@ -37,6 +37,7 @@ from src.data import (
 )
 from src.radar.morning_radar import run_morning_radar
 from src.scanner.eod_scanner import run_eod_scanner, check_morning_gap_veto
+from src.scanner.universe import get_lot_size
 
 
 def is_market_session_active() -> bool:
@@ -351,32 +352,43 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
 
     journal_dir = Path("data/paper")
     journal_dir.mkdir(parents=True, exist_ok=True)
-    active_file = journal_dir / "active_trades.json"
+    active_pos_file = journal_dir / "active_positions.json"
+    active_trades_file = journal_dir / "active_trades.json"
     history_file = journal_dir / "trade_history.json"
 
-    if not active_file.exists():
-        initial_trades = [
-            {
-                "trade_id": "TRD-1001",
-                "symbol": "RELIANCE",
-                "strategy": "Bull Call Spread",
-                "entry_date": "2026-08-14 09:30 IST",
-                "strike": 2450.0,
-                "entry_premium": 70.0,
-                "quantity_lots": 2,
-                "lot_size": 50,
-                "margin_blocked": 7000.0,
-                "current_ltp": 78.5,
-                "stop_loss": 50.0,
-                "target": 110.0,
-                "status": "OPEN",
-            }
-        ]
-        with open(active_file, "w", encoding="utf-8") as f:
-            json.dump(initial_trades, f, indent=2)
+    # Load / Initialize active trades from disk & session_state
+    if "active_trades" not in st.session_state:
+        target_load_file = active_pos_file if active_pos_file.exists() and active_pos_file.stat().st_size > 0 else (
+            active_trades_file if active_trades_file.exists() and active_trades_file.stat().st_size > 0 else None
+        )
+        if target_load_file:
+            with open(target_load_file, "r", encoding="utf-8") as f:
+                st.session_state.active_trades = json.load(f)
+        else:
+            initial_trades = [
+                {
+                    "trade_id": "TRD-1001",
+                    "symbol": "RELIANCE",
+                    "strategy": "Bull Call Spread",
+                    "entry_date": "2026-08-14 09:30 IST",
+                    "strike": 2450.0,
+                    "entry_premium": 70.0,
+                    "quantity_lots": 2,
+                    "lot_size": 250,
+                    "margin_blocked": 35000.0,
+                    "current_ltp": 78.5,
+                    "stop_loss": 50.0,
+                    "target": 110.0,
+                    "status": "OPEN",
+                }
+            ]
+            st.session_state.active_trades = initial_trades
+            with open(active_pos_file, "w", encoding="utf-8") as f:
+                json.dump(initial_trades, f, indent=2)
+            with open(active_trades_file, "w", encoding="utf-8") as f:
+                json.dump(initial_trades, f, indent=2)
 
-    with open(active_file, "r", encoding="utf-8") as f:
-        active_trades = json.load(f)
+    active_trades = st.session_state.active_trades
 
     # Capital Summary Calculation
     total_capital = 1000000.0
@@ -391,7 +403,7 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
     c_m3.metric("Free Available Cash", f"₹{free_cash:,.2f}")
     c_m4.metric("Active Margin Slots", f"{used_slots} / 5 Slots Used", delta=f"{5 - used_slots} Slots Free")
 
-    st.progress(blocked_margin / total_capital, text=f"Capital Deployed: {(blocked_margin / total_capital) * 100:.1f}%")
+    st.progress(max(0.0, min(1.0, blocked_margin / total_capital)), text=f"Capital Deployed: {(blocked_margin / total_capital) * 100:.1f}%")
     st.markdown("---")
 
     col_form, col_table = st.columns([1, 2])
@@ -412,6 +424,7 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
                 if used_slots >= 5:
                     st.error("Cannot log trade: Maximum 5 concurrent margin slots reached!")
                 else:
+                    lot_sz = get_lot_size(in_symbol)
                     new_trd = {
                         "trade_id": f"TRD-{1001 + len(active_trades)}",
                         "symbol": in_symbol.upper(),
@@ -420,16 +433,20 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
                         "strike": in_strike,
                         "entry_premium": in_premium,
                         "quantity_lots": in_lots,
-                        "lot_size": 50,
-                        "margin_blocked": in_premium * in_lots * 50,
+                        "lot_size": lot_sz,
+                        "margin_blocked": round(in_premium * in_lots * lot_sz, 2),
                         "current_ltp": in_premium,
                         "stop_loss": in_sl,
                         "target": in_target,
                         "status": "OPEN",
                     }
                     active_trades.append(new_trd)
-                    with open(active_file, "w", encoding="utf-8") as f:
+                    st.session_state.active_trades = active_trades
+                    with open(active_pos_file, "w", encoding="utf-8") as f:
                         json.dump(active_trades, f, indent=2)
+                    with open(active_trades_file, "w", encoding="utf-8") as f:
+                        json.dump(active_trades, f, indent=2)
+
                     st.success(f"Logged Trade {new_trd['trade_id']} for {new_trd['symbol']}!")
                     st.rerun()
 
@@ -448,6 +465,7 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
                         "Symbol": t["symbol"],
                         "Strategy": t["strategy"],
                         "Lots": t["quantity_lots"],
+                        "Lot Size": t["lot_size"],
                         "Entry (₹)": f"₹{t['entry_premium']:.2f}",
                         "LTP (₹)": f"₹{t['current_ltp']:.2f}",
                         "Unrealized P&L": f"₹{unrealized_pnl:+,.2f}",
@@ -464,21 +482,28 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
             if st.button("🔒 Close Selected Trade"):
                 to_remove = next((t for t in active_trades if t["trade_id"] == trd_to_close), None)
                 if to_remove:
+                    to_remove["status"] = "CLOSED"
+                    to_remove["close_date"] = datetime.now().strftime("%Y-%m-%d %H:%M IST")
                     active_trades = [t for t in active_trades if t["trade_id"] != trd_to_close]
-                    with open(active_file, "w", encoding="utf-8") as f:
+                    st.session_state.active_trades = active_trades
+
+                    with open(active_pos_file, "w", encoding="utf-8") as f:
+                        json.dump(active_trades, f, indent=2)
+                    with open(active_trades_file, "w", encoding="utf-8") as f:
                         json.dump(active_trades, f, indent=2)
 
                     history = []
-                    if history_file.exists():
-                        with open(history_file, "r", encoding="utf-8") as f:
-                            history = json.load(f)
-                    to_remove["close_date"] = datetime.now().strftime("%Y-%m-%d %H:%M IST")
-                    to_remove["status"] = "CLOSED"
+                    if history_file.exists() and history_file.stat().st_size > 0:
+                        try:
+                            with open(history_file, "r", encoding="utf-8") as f:
+                                history = json.load(f)
+                        except Exception:
+                            history = []
                     history.append(to_remove)
                     with open(history_file, "w", encoding="utf-8") as f:
                         json.dump(history, f, indent=2)
 
-                    st.success(f"Closed Trade {trd_to_close} and logged into trade_history.json!")
+                    st.success(f"Closed Trade {trd_to_close} and saved to trade_history.json!")
                     st.rerun()
 
 # -----------------------------------------------------------------------------

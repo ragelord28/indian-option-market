@@ -151,11 +151,36 @@ def test_black_scholes_target_premium():
     assert result["option_target_price"] > 0
     assert result["bs_entry_premium"] > 0
 
-    # The target should reflect Black-Scholes pricing at S=2575, not linear delta*move
-    # Verify using direct BS calculation
+    # The target should reflect Black-Scholes pricing at S=2575 using verified Tuesday DTE
     strike = result["strike"]
+    from src.data.option_analytics import get_days_to_monthly_expiry
+    dte = float(get_days_to_monthly_expiry())
     bs_target = calculate_option_price(
-        flag="c", S=2575.0, K=strike, days_to_expiry=30.0, r=0.07, sigma=0.20
+        flag="c", S=2575.0, K=strike, days_to_expiry=dte, r=0.07, sigma=0.20
     )
     # The target price should be approximately equal to BS pricing (or floored at 0.5*ltp)
     assert abs(result["option_target_price"] - round(max(bs_target, result["ltp"] * 0.50), 2)) < 3.0
+
+
+def test_tuesday_monthly_expiry_and_lot_sizes():
+    """Test Tuesday monthly expiry date solver and official lot size lookups."""
+    from datetime import date
+    from src.data.option_analytics import get_monthly_expiry_date, get_days_to_monthly_expiry
+    from src.scanner.universe import get_lot_size
+
+    # August 2026 Monthly Expiry must be Tuesday Aug 25, 2026
+    aug_date = date(2026, 8, 17)
+    expiry = get_monthly_expiry_date(aug_date)
+    assert expiry == date(2026, 8, 25)
+    assert expiry.weekday() == 1  # 1 is Tuesday
+
+    dte = get_days_to_monthly_expiry(aug_date)
+    assert dte == 8
+
+    # Lot size lookups
+    assert get_lot_size("RELIANCE") == 250
+    assert get_lot_size("TCS") == 175
+    assert get_lot_size("INFY") == 400
+    assert get_lot_size("HDFCBANK") == 550
+    assert get_lot_size("ASHOKLEY") == 5000
+    assert get_lot_size("UNKNOWN_TICKER") == 250
