@@ -110,7 +110,6 @@ _FULL_LIST = TOP_50_FNO + [
     "GODREJCP",
     "GODREJPROP",
     "GRANULES",
-    "GNFC",
     "HAVELLS",
     "HAL",
     "IDEA",
@@ -237,7 +236,7 @@ SECTOR_MAP = {
     # Chemicals & Agri
     "PIIND": "Chemicals & Agri", "AARTIIND": "Chemicals & Agri", "DEEPAKNTR": "Chemicals & Agri",
     "SRF": "Chemicals & Agri", "NAVINFLUOR": "Chemicals & Agri", "UPL": "Chemicals & Agri",
-    "TATACHEM": "Chemicals & Agri", "GNFC": "Chemicals & Agri", "COROMANDEL": "Chemicals & Agri",
+    "TATACHEM": "Chemicals & Agri", "COROMANDEL": "Chemicals & Agri",
     "CHAMBLFERT": "Chemicals & Agri", "ATUL": "Chemicals & Agri",
 
     # Capital Goods & Defence
@@ -296,7 +295,7 @@ LOT_SIZE_MAP = {
     "COLPAL": 350, "CONCOR": 1000, "COROMANDEL": 700, "CROMPTON": 1500, "CUB": 5000,
     "CUMMINSIND": 300, "DABUR": 1250, "DALBHARAT": 275, "DEEPAKNTR": 300, "DELTACORP": 2800,
     "DIXON": 100, "DLF": 825, "ESCORTS": 175, "FEDERALBNK": 5000, "GAIL": 2700,
-    "GLENMARK": 725, "GODREJCP": 500, "GODREJPROP": 225, "GRANULES": 2000, "GNFC": 1300,
+    "GLENMARK": 725, "GODREJCP": 500, "GODREJPROP": 225, "GRANULES": 2000,
     "HAVELLS": 500, "HAL": 150, "IDEA": 80000, "IDFCFIRSTB": 7500, "IEX": 3750,
     "IPCALAB": 650, "IRCTC": 875, "IRFC": 4000, "JINDALSTEL": 625, "JKCEMENT": 250,
     "LAURUSLABS": 1700, "LICHSGFIN": 1000, "LICI": 600, "LUPIN": 425, "M&MFIN": 2000,

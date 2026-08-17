@@ -184,3 +184,57 @@ def test_tuesday_monthly_expiry_and_lot_sizes():
     assert get_lot_size("HDFCBANK") == 550
     assert get_lot_size("ASHOKLEY") == 5000
     assert get_lot_size("UNKNOWN_TICKER") == 250
+
+
+def test_gnfc_purged_from_universe():
+    """Verify GNFC is completely purged from all universe registries."""
+    from src.scanner.universe import TOP_50_FNO, FULL_FNO_UNIVERSE, SECTOR_MAP, LOT_SIZE_MAP
+
+    assert "GNFC" not in TOP_50_FNO
+    assert "GNFC" not in FULL_FNO_UNIVERSE
+    assert "GNFC" not in SECTOR_MAP
+    assert "GNFC" not in LOT_SIZE_MAP
+
+
+def test_ashokley_strike_grid_snapping():
+    """Verify Ashok Leyland at ₹177.10 snaps to valid strikes (175.00, 177.50, 180.00)."""
+    from src.data.option_analytics import get_strike_step, snap_to_strike_grid
+
+    step = get_strike_step(177.10)
+    assert step == 2.5  # Step for spot between 100 and 250 is 2.5
+
+    snapped_at_177_10 = snap_to_strike_grid(177.10)
+    assert snapped_at_177_10 == 177.50
+
+    snapped_174_1 = snap_to_strike_grid(174.10)
+    assert snapped_174_1 == 175.00
+
+    snapped_179_8 = snap_to_strike_grid(179.80)
+    assert snapped_179_8 == 180.00
+
+
+def test_actionable_option_ticket_target_and_sl_premiums():
+    """Verify build_naked_itm_ticket computes valid snapped strikes, option contract string, entry, target, and SL exit premiums."""
+    from src.data.strategy_builder import build_naked_itm_ticket
+
+    ticket = build_naked_itm_ticket(
+        symbol="ASHOKLEY",
+        spot_price=177.10,
+        bias="BULLISH",
+        target_spot=182.50,
+        sl_spot=174.50,
+        iv=0.25,
+        lot_size=5000,
+    )
+
+    assert ticket["symbol"] == "ASHOKLEY"
+    assert ticket["strike"] in (175.0, 177.5, 180.0)
+    assert "ASHOKLEY" in ticket["option_symbol"]
+    assert "CE" in ticket["option_symbol"]
+    assert ticket["option_entry_limit"] > 0.0
+    assert ticket["option_target_exit"] > ticket["option_entry_limit"]
+    assert ticket["option_sl_exit"] < ticket["option_entry_limit"]
+    assert ticket["max_profit_inr"] > 0.0
+    assert ticket["max_loss_inr"] > 0.0
+    assert ticket["lot_size"] == 5000
+

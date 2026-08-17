@@ -403,12 +403,28 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
 
     selected_item = next((r for r in radar_items if r["symbol"] == selected_symbol), None)
 
-    if selected_item and "execution_ticket" in selected_item:
-        full_ticket = selected_item["execution_ticket"]
-    else:
+    if selected_item:
+        current_spot = float(selected_item.get("live_spot", selected_item.get("close", 2500.0)))
+        bias = selected_item.get("bias", "BULLISH")
+        ivr = float(selected_item.get("ivr", 45.0))
+        vrp = float(selected_item.get("vrp", 2.5))
+        underlying_target = selected_item.get("target")
+        conv_score = float(selected_item.get("conviction_score", 80.0))
         full_ticket = build_optimal_strategy(
             symbol=selected_symbol,
-            spot_price=2500.0,
+            spot_price=current_spot,
+            bias=bias,
+            ivr=ivr,
+            vrp=vrp,
+            option_chain_df=pd.DataFrame(),
+            underlying_target=underlying_target,
+            conviction_score=conv_score,
+        )
+    else:
+        current_spot = 2500.0
+        full_ticket = build_optimal_strategy(
+            symbol=selected_symbol,
+            spot_price=current_spot,
             bias="BULLISH",
             ivr=45.0,
             vrp=2.5,
@@ -442,22 +458,32 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
     # Section B: Execution Ticket Table
     st.markdown("### 📋 Multi-Leg Execution Ticket")
     legs_df = pd.DataFrame(ticket["legs"])
-    st.dataframe(legs_df, width="stretch", hide_index=True)
+    ticket_cols = ['Option Contract', 'Action', 'Valid Strike', 'Option LTP / Entry (₹)', 'Target Premium (₹)', 'SL Premium (₹)', 'Delta', 'Lot Size']
+    display_cols = [c for c in ticket_cols if c in legs_df.columns]
+    if display_cols:
+        st.dataframe(legs_df[display_cols], width="stretch", hide_index=True)
+    else:
+        st.dataframe(legs_df, width="stretch", hide_index=True)
 
     # Section C: Capital & Risk Cards
     st.markdown("### 💰 Capital, Slippage & Risk Profile")
     rc1, rc2, rc3, rc4, rc5 = st.columns(5)
+    margin_req = float(ticket.get("basket_margin", ticket.get("net_mid_cost", 0.0)))
+    target_prof_inr = float(ticket.get("max_profit_inr", ticket.get("max_profit", 0.0)))
+    max_loss_inr = float(ticket.get("max_loss_inr", ticket.get("max_loss", 0.0)))
+    rrr_val = float(ticket.get("reward_risk_ratio", 1.0))
+
     rc1.metric("Net Cost / Type", f"₹{ticket['net_mid_cost']:,.2f}", delta=ticket['net_debit_or_credit'])
-    rc2.metric("Basket Margin Required", f"₹{ticket['basket_margin']:,.2f}")
-    rc3.metric("Max Profit Target", f"₹{ticket['max_profit']:,.2f}")
-    rc4.metric("Max Defined Loss", f"₹{ticket['max_loss']:,.2f}")
-    rc5.metric("Return on Margin (RoM)", f"{ticket['rom_pct']:.1f}%")
+    rc2.metric("Total Capital / Margin Required (₹)", f"₹{margin_req:,.2f}")
+    rc3.metric("Target Profit (₹)", f"₹{target_prof_inr:,.2f}")
+    rc4.metric("Max Defined Stop Loss (₹)", f"₹{max_loss_inr:,.2f}")
+    rc5.metric("Net Risk-to-Reward Ratio (RRR)", f"{rrr_val:.2f}")
 
     rc6, rc7, rc8, rc9 = st.columns(4)
     rc6.metric("Guaranteed Slippage Cost", f"₹{ticket['guaranteed_slippage_cost']:,.2f}")
     rc7.metric("Slippage Execution Drag", f"{ticket['slippage_drag_pct']:.1f}%", delta="Slippage Veto" if ticket['slippage_veto'] else "Acceptable")
     rc8.metric("Breakeven Spot Price", f"₹{ticket['breakeven']:,.2f}")
-    rc9.metric("Reward-to-Risk Ratio", f"{ticket['reward_risk_ratio']:.2f}")
+    rc9.metric("Return on Margin (RoM)", f"{ticket['rom_pct']:.1f}%")
 
     st.markdown("---")
 

@@ -69,6 +69,31 @@ def get_days_to_monthly_expiry(dt: date | datetime | None = None) -> int:
     return max((expiry - dt).days, 1)
 
 
+def get_strike_step(spot: float) -> float:
+    """Official NSE Equity Option Strike Step Intervals"""
+    if spot <= 100:
+        return 1.0
+    elif spot <= 250:
+        return 2.5   # e.g. ASHOKLEY (170, 172.5, 175, 177.5)
+    elif spot <= 500:
+        return 5.0   # e.g. SBIN, PFC
+    elif spot <= 1000:
+        return 10.0  # e.g. ICICIBANK, AXISBANK
+    elif spot <= 2500:
+        return 20.0  # e.g. RELIANCE, INFY
+    elif spot <= 5000:
+        return 50.0  # e.g. TCS, BAJFINANCE
+    else:
+        return 100.0 # e.g. HAL, PAGEIND, MARUTI
+
+
+def snap_to_strike_grid(spot: float, strike_step: float | None = None) -> float:
+    """Snaps any continuous floating price to the nearest valid exchange strike."""
+    if strike_step is None:
+        strike_step = get_strike_step(spot)
+    return round(round(spot / strike_step) * strike_step, 2)
+
+
 def calculate_pcr(option_chain_df: pd.DataFrame) -> float:
     """
     Calculate Put-Call Ratio (PCR) based on total Open Interest.
@@ -316,8 +341,9 @@ def get_best_strike(
     opt_type = "CE" if is_bullish else "PE"
 
     if option_chain_df.empty or "strike_price" not in option_chain_df.columns:
+        snapped_spot_strike = snap_to_strike_grid(spot_price)
         return {
-            "strike": spot_price,
+            "strike": snapped_spot_strike,
             "type": opt_type,
             "ltp": 0.0,
             "delta": 0.65 if is_bullish else -0.65,
