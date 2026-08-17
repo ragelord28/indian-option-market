@@ -227,10 +227,19 @@ def run_morning_radar(
 def scan_morning_radar(
     watchlist_path: Path | str = Path("data/watchlists/watchlist_latest.json"),
     output_path: Path | str = Path("data/radar/radar_latest.json"),
+    data_provider: Any = None,
+    input_watchlist: Any = None,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Alias for run_morning_radar with session evaluation enabled."""
+    """
+    Main runner function for Morning Radar scans.
+    Evaluates Morning Radar guards and ORB triggers, updating data/radar/radar_latest.json.
+    """
+    w_path = input_watchlist or watchlist_path
     return run_morning_radar(
-        watchlist_path=watchlist_path, output_path=output_path, force_session_evaluation=True
+        watchlist_path=w_path,
+        output_path=output_path,
+        force_session_evaluation=True,
     )
 
 
