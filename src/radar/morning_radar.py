@@ -24,25 +24,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.scanner.universe import get_sector
 from src.scanner.eod_scanner import check_morning_gap_veto
 from src.data.strategy_builder import build_optimal_strategy
-
-SECTOR_MAP = {
-    "RELIANCE": "Energy", "ONGC": "Energy", "BPCL": "Energy", "IOC": "Energy", "NTPC": "Energy", "POWERGRID": "Energy",
-    "TCS": "IT", "INFY": "IT", "HCLTECH": "IT", "WIPRO": "IT", "TECHM": "IT", "LTIM": "IT",
-    "HDFCBANK": "Banking", "ICICIBANK": "Banking", "SBIN": "Banking", "KOTAKBANK": "Banking", "AXISBANK": "Banking", "BANKBARODA": "Banking", "PNB": "Banking",
-    "TATAMOTORS": "Auto", "M&M": "Auto", "MARUTI": "Auto", "BAJAJ-AUTO": "Auto", "HEROMOTOCO": "Auto", "BHARATFORG": "Auto", "EICHERMOT": "Auto",
-    "SUNPHARMA": "Pharma", "DRREDDY": "Pharma", "CIPLA": "Pharma", "DIVISLAB": "Pharma", "APOLLOHOSP": "Pharma",
-    "ITC": "FMCG", "HINDUNILVR": "FMCG", "BRITANNIA": "FMCG", "TATACONSUM": "FMCG", "NESTLEIND": "FMCG",
-    "TATASTEEL": "Metals", "JINDALSTEL": "Metals", "HINDALCO": "Metals", "JSWSTEEL": "Metals", "COALINDIA": "Metals",
-    "NIFTY50": "Index", "BANKNIFTY": "Index", "FINNIFTY": "Index",
-}
-
-
-def get_sector(symbol: str) -> str:
-    """Resolve sector classification for symbol."""
-    base_sym = symbol.replace(".NS", "").upper()
-    return SECTOR_MAP.get(base_sym, "Diversified")
 
 
 def is_market_session_active(dt: datetime | None = None) -> bool:
@@ -188,6 +172,11 @@ def run_morning_radar(
             underlying_target=item.get("target"),
         )
 
+        orb_high_val = item.get("orb_high", close_p * 1.005)
+        orb_low_val = item.get("orb_low", close_p * 0.995)
+        candle_close_val = item.get("candle_close", close_p)
+        orb_reason = f"Spot ₹{candle_close_val:,.2f} inside ORB range ₹{orb_low_val:,.2f} - ₹{orb_high_val:,.2f}"
+
         radar_items.append(
             {
                 "#": idx,
@@ -198,6 +187,7 @@ def run_morning_radar(
                 "suggested_action": item.get("suggested_action", "BUY CALL"),
                 "status": status,
                 "veto_reason": veto_reason,
+                "orb_reason": orb_reason,
                 "close": close_p,
                 "entry": item.get("entry", close_p),
                 "stop_loss": item.get("stop_loss", round(close_p * 0.98, 2)),
@@ -232,6 +222,16 @@ def run_morning_radar(
 
     print(f"Morning Radar Complete! Processed {len(radar_items)} candidates into {out_p}.")
     return output_data
+
+
+def scan_morning_radar(
+    watchlist_path: Path | str = Path("data/watchlists/watchlist_latest.json"),
+    output_path: Path | str = Path("data/radar/radar_latest.json"),
+) -> Dict[str, Any]:
+    """Alias for run_morning_radar with session evaluation enabled."""
+    return run_morning_radar(
+        watchlist_path=watchlist_path, output_path=output_path, force_session_evaluation=True
+    )
 
 
 if __name__ == "__main__":

@@ -18,11 +18,11 @@ from src.radar.morning_radar import run_morning_radar, get_sector
 
 def test_get_sector():
     """Test sector classification lookup."""
-    assert get_sector("RELIANCE") == "Energy"
+    assert get_sector("RELIANCE") == "Oil, Gas & Energy"
     assert get_sector("TCS") == "IT"
     assert get_sector("HDFCBANK") == "Banking"
     assert get_sector("TATAMOTORS") == "Auto"
-    assert get_sector("UNKNOWN_STOCK") == "Diversified"
+    assert get_sector("UNKNOWN_STOCK") == "UNKNOWN_STOCK"
 
 
 def test_run_morning_radar_execution(tmp_path):

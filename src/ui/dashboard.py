@@ -153,6 +153,13 @@ if selected_tab == "📊 D-1 Command Center":
     st.markdown('<p class="main-title">📊 D-1 Actionable Command Center</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-title">Pre-market setups evaluated against Sector Limit, Event Blackout, 1.5x ATR Gap Veto, and 09:30 ORB Triggers</p>', unsafe_allow_html=True)
 
+    if st.button("⚡ Run Live Morning Radar (09:30 ORB Scan)", type="primary"):
+        with st.spinner("Fetching live 15m candle data from Upstox / Market..."):
+            from src.radar.morning_radar import scan_morning_radar
+            scan_morning_radar()
+            st.success("Radar scan complete! Watchlist updated.")
+            st.rerun()
+
     if not is_market_session_active():
         st.info("🌙 Outside Live Market Hours: All candidates are in 🟡 AWAITING ORB pre-market state pending 09:15 AM opening bell and 09:30 AM ORB breakout evaluation.")
 
@@ -173,6 +180,7 @@ if selected_tab == "📊 D-1 Command Center":
 
             ticket = r.get("execution_ticket", {})
             strat_name = ticket.get("strategy_name", "Bull Call Spread")
+            orb_info = r.get("orb_reason") or f"Spot ₹{r['close']:,.2f} inside ORB range ₹{r['close']*0.995:,.2f} - ₹{r['close']*1.005:,.2f}"
 
             table_rows.append(
                 {
@@ -181,6 +189,7 @@ if selected_tab == "📊 D-1 Command Center":
                     "Sector": r["sector"],
                     "Regime & Bias": f"{r['bias']} ({r['regime']})",
                     "Agent 1.5 Status": status_badge,
+                    "ORB State / Reason": orb_info if "AWAITING" in status_badge else (r.get("veto_reason") or "Breakout Confirmed"),
                     "Trigger Zone": r["trigger_zone"],
                     "Target Spot": f"₹{r['target']:,.2f}",
                     "Optimal Strategy": strat_name,

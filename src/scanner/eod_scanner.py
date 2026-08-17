@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.scanner.universe import FULL_FNO_UNIVERSE
+from src.scanner.universe import FULL_FNO_UNIVERSE, get_sector
 from src.data.yahoo_provider import YahooFinanceProvider
 from src.data.option_analytics import calculate_vrp
 from src.data.strategy_builder import build_optimal_strategy
@@ -142,8 +142,7 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # True Dynamic Per-Stock 20-HV (%)
     log_ret = np.log(data["close"] / data["close"].shift(1))
-    data["hv_20"] = log_ret.rolling(window=20, min_periods=1).std() * np.sqrt(252) * 100.0
-    data["hv_20"] = data["hv_20"].fillna(20.0)
+    data["hv_20"] = (log_ret.rolling(20).std() * np.sqrt(252) * 100.0).round(1)
 
     return data
 
@@ -336,8 +335,6 @@ def run_eod_scanner(
         f.write(md_content)
 
     # Reset data/radar/radar_latest.json with clean pre-market state
-    from src.radar.morning_radar import get_sector
-
     radar_path = Path("data/radar/radar_latest.json")
     radar_path.parent.mkdir(parents=True, exist_ok=True)
     radar_items = []
