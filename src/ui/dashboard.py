@@ -209,7 +209,7 @@ if selected_tab == "📊 D-1 Command Center":
             )
 
         df_cmd = pd.DataFrame(table_rows)
-        st.dataframe(df_cmd, use_container_width=True, hide_index=True)
+        st.dataframe(df_cmd, width="stretch", hide_index=True)
 
         st.markdown("---")
         st.markdown("### 🔎 14-Factor Technical Checklist Autopsy")
@@ -230,9 +230,19 @@ if selected_tab == "📊 D-1 Command Center":
             a2.write(f"9. **Event Blackout Check**: ✅ Pass (No Earnings < 48h)")
             a2.write(f"10. **09:15 Opening Gap**: {'✅ Pass' if item_autopsy['status'] != 'VETOED_GAP' else '❌ Vetoed (Gap > 1.5x ATR)'}")
 
+            status = item_autopsy.get("status", "AWAITING_ORB")
+            if status == "EXPIRED_NO_TRIGGER":
+                orb_str = "⚪ Expired (No Breakout by 11:30 AM)"
+            elif status == "TRIGGERED":
+                orb_str = "🟢 Triggered (15m Close Confirmed)"
+            elif status.startswith("VETOED"):
+                orb_str = f"🔴 {status}"
+            else:
+                orb_str = "🟡 Awaiting Breakout"
+
             a3.write(f"11. **Option Liquidity Spread**: ✅ Grade {item_autopsy.get('execution_ticket', {}).get('liquidity_grade', 'A')}")
             a3.write(f"12. **PCR Support/Resistance**: ✅ 1.18 (Bullish)")
-            a3.write(f"13. **09:30 ORB Breakout**: {'✅ Triggered' if item_autopsy['status'] == 'TRIGGERED' else '🟡 Awaiting'}")
+            a3.write(f"13. **09:30 ORB Breakout**: {orb_str}")
             a3.write(f"14. **Slippage Drag Threshold**: ✅ Pass (< 20%)")
 
 # -----------------------------------------------------------------------------
@@ -289,7 +299,7 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
     # Section B: Execution Ticket Table
     st.markdown("### 📋 Multi-Leg Execution Ticket")
     legs_df = pd.DataFrame(ticket["legs"])
-    st.dataframe(legs_df, use_container_width=True, hide_index=True)
+    st.dataframe(legs_df, width="stretch", hide_index=True)
 
     # Section C: Capital & Risk Cards
     st.markdown("### 💰 Capital, Slippage & Risk Profile")
@@ -475,7 +485,7 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
                     }
                 )
 
-            st.dataframe(pd.DataFrame(display_positions), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(display_positions), width="stretch", hide_index=True)
 
             st.markdown("#### 🔒 Position Management")
             trd_to_close = st.selectbox("Select Active Trade to Close:", [t["trade_id"] for t in active_trades])
@@ -522,7 +532,7 @@ elif selected_tab == "📈 Portfolio & Benchmark Analytics":
         {"Strategy": "AVPCAfternoonStrategy", "Start Cap": 1000000.0, "End Cap": 3418920.80, "ROI %": "+241.9%", "CAGR %": "+712040.1%", "Max DD %": "5.8%", "Win Rate": "74.5%", "Trades": 161},
     ]
     df_bm = pd.DataFrame(benchmark_data)
-    st.dataframe(df_bm, use_container_width=True, hide_index=True)
+    st.dataframe(df_bm, width="stretch", hide_index=True)
 
     st.markdown("### Comparative Portfolio Equity Curves")
     dates = pd.date_range("2026-06-15", periods=60, freq="D")
