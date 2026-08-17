@@ -168,6 +168,30 @@ else:
         </a>""",
         unsafe_allow_html=True,
     )
+
+with st.sidebar.expander("🔑 Manual Upstox Token / Code Entry"):
+    manual_code = st.text_input("Paste Authorization Code (?code=...)")
+    if st.button("Submit Code"):
+        from src.data.upstox_auth import fetch_and_save_token
+        try:
+            fetch_and_save_token(manual_code.strip())
+            st.success("Token generated & saved!")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Auth failed: {e}")
+
+if st.sidebar.button("🧪 Ping Upstox Live Connection"):
+    from src.data.upstox_provider import UpstoxProvider
+    try:
+        p = UpstoxProvider()
+        df = p.fetch_historical_data("RELIANCE", "2026-08-14", "2026-08-17", timeframe="1d")
+        if not df.empty:
+            st.sidebar.success(f"✅ Upstox Live Active! RELIANCE LTP: ₹{df['close'].iloc[-1]:,.2f}")
+        else:
+            st.sidebar.warning("⚠️ Connected but empty response returned.")
+    except Exception as err:
+        st.sidebar.error(f"❌ Connection Failed: {err}")
+
 st.sidebar.markdown("---")
 
 selected_tab = st.sidebar.radio(
