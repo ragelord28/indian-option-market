@@ -7,8 +7,8 @@ venv/
 .venv/
 
 # Local Data & Logs
-data/
-logs/
+/data/
+/logs/
 
 # Secrets
 .env
