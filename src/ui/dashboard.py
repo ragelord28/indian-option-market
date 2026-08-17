@@ -181,17 +181,21 @@ with st.sidebar.expander("🔑 Manual Upstox Token / Code Entry"):
         except Exception as e:
             st.error(f"Auth failed: {e}")
 
-if st.sidebar.button("🧪 Ping Upstox Live Connection"):
-    from src.data.upstox_provider import UpstoxProvider
-    try:
-        p = UpstoxProvider()
-        df = p.fetch_historical_data("RELIANCE", "2026-08-14", "2026-08-17", timeframe="1d")
-        if not df.empty:
-            st.sidebar.success(f"✅ Upstox Live Active! RELIANCE LTP: ₹{df['close'].iloc[-1]:,.2f}")
+with st.sidebar.expander("🧪 Live Exchange Tick Verification", expanded=True):
+    test_sym = st.text_input("Enter NSE F&O Ticker to Verify", value="RELIANCE").upper().strip()
+    if st.button("📡 Fetch Live Broker LTP"):
+        from src.data.upstox_provider import fetch_live_quotes_batch
+        quotes = fetch_live_quotes_batch([test_sym, "ASHOKLEY", "HAL", "TCS", "INFY"])
+        if test_sym in quotes and quotes[test_sym]["ltp"] > 0:
+            q = quotes[test_sym]
+            st.success(f"✅ {test_sym} LTP: ₹{q['ltp']:,.2f} | Day High: ₹{q['high']:,.2f} | Day Low: ₹{q['low']:,.2f}")
         else:
-            st.sidebar.warning("⚠️ Connected but empty response returned.")
-    except Exception as err:
-        st.sidebar.error(f"❌ Connection Failed: {err}")
+            st.error(f"❌ Could not fetch live quote for {test_sym}")
+        # Show reference benchmark table
+        st.caption("Live Feed Cross-Check (5 Sample Equities):")
+        ref_rows = [{"Symbol": s, "Live LTP (₹)": quotes[s]["ltp"], "Close (₹)": quotes[s]["close"]} for s in quotes if quotes.get(s, {}).get("ltp", 0.0) > 0]
+        if ref_rows:
+            st.dataframe(pd.DataFrame(ref_rows), width="stretch", hide_index=True)
 
 auto_refresh = st.sidebar.checkbox("🔄 Enable 5-Min Live Auto-Refresh", value=False)
 if auto_refresh:
@@ -229,37 +233,17 @@ if "active_trades" not in st.session_state:
         active_trades_file if active_trades_file.exists() and active_trades_file.stat().st_size > 0 else None
     )
     if target_load_file:
-        with open(target_load_file, "r", encoding="utf-8") as f:
-            st.session_state.active_trades = json.load(f)
+        try:
+            with open(target_load_file, "r", encoding="utf-8") as f:
+                st.session_state.active_trades = json.load(f)
+        except Exception:
+            st.session_state.active_trades = []
     else:
-        initial_trades = [
-            {
-                "trade_id": "TRD-1001",
-                "symbol": "RELIANCE",
-                "strategy": "Bull Call Spread",
-                "direction": "BULLISH",
-                "entry_date": "2026-08-14 09:30 IST",
-                "strike": 2450.0,
-                "entry_premium": 70.0,
-                "entry_spot": 2450.0,
-                "target_spot": 2523.5,
-                "sl_spot": 2401.0,
-                "current_spot": 2450.0,
-                "quantity_lots": 2,
-                "lot_size": 250,
-                "margin_blocked": 35000.0,
-                "current_ltp": 78.5,
-                "stop_loss": 50.0,
-                "target": 110.0,
-                "trailing_sl_active": False,
-                "status": "OPEN",
-            }
-        ]
-        st.session_state.active_trades = initial_trades
+        st.session_state.active_trades = []
         with open(active_pos_file, "w", encoding="utf-8") as f:
-            json.dump(initial_trades, f, indent=2)
+            json.dump([], f, indent=2)
         with open(active_trades_file, "w", encoding="utf-8") as f:
-            json.dump(initial_trades, f, indent=2)
+            json.dump([], f, indent=2)
 
 active_trades = st.session_state.active_trades
 used_slots = len(active_trades)
