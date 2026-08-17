@@ -160,6 +160,9 @@ if selected_tab == "📊 D-1 Command Center":
             st.success("Radar scan complete! Watchlist updated.")
             st.rerun()
 
+    scan_ts = radar_data.get("timestamp", datetime.now().isoformat())
+    st.caption(f"⏱️ **Last Radar Scan**: `{scan_ts}` | **Market Session**: {'🟢 LIVE SESSION' if is_market_session_active() else '🌙 CLOSED / PRE-MARKET'}")
+
     if not is_market_session_active():
         st.info("🌙 Outside Live Market Hours: All candidates are in 🟡 AWAITING ORB pre-market state pending 09:15 AM opening bell and 09:30 AM ORB breakout evaluation.")
 
@@ -168,8 +171,10 @@ if selected_tab == "📊 D-1 Command Center":
     else:
         table_rows = []
         for r in radar_items:
-            st_code = r["status"]
-            if not is_market_session_active():
+            st_code = r.get("status", "AWAITING_ORB")
+            if st_code == "EXPIRED_NO_TRIGGER":
+                status_badge = "⚪ EXPIRED_NO_TRIGGER"
+            elif not is_market_session_active():
                 status_badge = "🟡 AWAITING ORB (Pre-Market)"
             elif st_code == "TRIGGERED":
                 status_badge = "🟢 TRIGGERED"
@@ -180,7 +185,8 @@ if selected_tab == "📊 D-1 Command Center":
 
             ticket = r.get("execution_ticket", {})
             strat_name = ticket.get("strategy_name", "Bull Call Spread")
-            orb_info = r.get("orb_reason") or f"Spot ₹{r['close']:,.2f} inside ORB range ₹{r['close']*0.995:,.2f} - ₹{r['close']*1.005:,.2f}"
+            live_spot = r.get("live_spot", r.get("close", 0.0))
+            orb_info = r.get("orb_reason") or f"Spot ₹{live_spot:,.2f} inside ORB range ₹{live_spot*0.995:,.2f} - ₹{live_spot*1.005:,.2f}"
 
             table_rows.append(
                 {
@@ -189,6 +195,7 @@ if selected_tab == "📊 D-1 Command Center":
                     "Sector": r["sector"],
                     "Regime & Bias": f"{r['bias']} ({r['regime']})",
                     "Agent 1.5 Status": status_badge,
+                    "Live Spot (₹)": f"₹{live_spot:,.2f}",
                     "ORB State / Reason": orb_info if "AWAITING" in status_badge else (r.get("veto_reason") or "Breakout Confirmed"),
                     "Trigger Zone": r["trigger_zone"],
                     "Target Spot": f"₹{r['target']:,.2f}",

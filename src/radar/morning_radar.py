@@ -43,6 +43,59 @@ def is_market_session_active(dt: datetime | None = None) -> bool:
     return True
 
 
+def is_past_1130_am(dt: datetime | None = None) -> bool:
+    """Check if current IST time is past 11:30 AM IST."""
+    if dt is None:
+        try:
+            import pytz
+            ist = pytz.timezone("Asia/Kolkata")
+            dt = datetime.now(ist)
+        except Exception:
+            dt = datetime.now()
+    time_min = dt.hour * 60 + dt.minute
+    return time_min >= 11 * 60 + 30
+
+
+def fetch_live_15m_data(symbol: str) -> Dict[str, Any] | None:
+    """
+    Fetch today's actual live 15m intraday bars for symbol via YahooFinanceProvider or yfinance.
+    Returns dict with orb_high, orb_low, candle_close, current_spot, rvol if successful, else None.
+    """
+    try:
+        import yfinance as yf
+        ticker_sym = symbol if symbol.endswith(".NS") or "^" in symbol else f"{symbol}.NS"
+        df = yf.download(ticker_sym, period="1d", interval="15m", progress=False)
+        if df is None or df.empty or len(df) == 0:
+            return None
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0].lower() for c in df.columns]
+        else:
+            df.columns = [c.lower() for c in df.columns]
+
+        bar_0 = df.iloc[0]
+        latest_bar = df.iloc[-1]
+
+        orb_high = float(bar_0["high"])
+        orb_low = float(bar_0["low"])
+        current_spot = float(latest_bar["close"])
+        candle_close = float(latest_bar["close"])
+
+        vol_0 = float(bar_0.get("volume", 0.0))
+        mean_vol = float(df["volume"].mean()) if "volume" in df and len(df) > 0 else 0.0
+        rvol = float(vol_0 / (mean_vol + 1e-5)) if mean_vol > 0 else 1.0
+
+        return {
+            "orb_high": round(orb_high, 2),
+            "orb_low": round(orb_low, 2),
+            "current_spot": round(current_spot, 2),
+            "candle_close": round(candle_close, 2),
+            "rvol": round(rvol, 2),
+        }
+    except Exception:
+        return None
+
+
 def run_morning_radar(
     watchlist_path: Path | str = Path("data/watchlists/watchlist_latest.json"),
     output_path: Path | str = Path("data/radar/radar_latest.json"),
@@ -108,6 +161,21 @@ def run_morning_radar(
             or ("simulated_triggered" in item)
         )
 
+        # Attempt to fetch live 15m candle data if session is active and not a mock fixture
+        live_info = fetch_live_15m_data(sym) if (session_active and "simulated_open" not in item) else None
+
+        if live_info:
+            orb_high = live_info["orb_high"]
+            orb_low = live_info["orb_low"]
+            close_p = live_info["current_spot"]
+            candle_close = live_info["candle_close"]
+            rvol = live_info["rvol"]
+        else:
+            orb_high = item.get("orb_high", round(close_p * 1.005, 2))
+            orb_low = item.get("orb_low", round(close_p * 0.995, 2))
+            candle_close = item.get("candle_close", close_p)
+            rvol = float(item.get("rvol", 1.0))
+
         veto_reason = None
         status = "AWAITING_ORB"
 
@@ -131,8 +199,6 @@ def run_morning_radar(
 
             if status == "AWAITING_ORB":
                 # Guard 4: ORB Width Check
-                orb_high = item.get("orb_high", close_p * 1.005)
-                orb_low = item.get("orb_low", close_p * 0.995)
                 orb_width = orb_high - orb_low
                 if orb_width < 0.3 * atr14:
                     status = "VETOED_ORB_CHOP"
@@ -145,14 +211,14 @@ def run_morning_radar(
                 sector_counts[sec] = sector_counts.get(sec, 0) + 1
 
                 # Check 09:30 ORB Trigger (15m Candle Close)
-                candle_close = item.get("candle_close", close_p)
-                rvol = item.get("rvol", 1.0)
-
                 is_long_trigger = (candle_close > orb_high + (0.001 * close_p)) and (rvol >= 1.3)
                 is_short_trigger = (candle_close < orb_low - (0.001 * close_p)) and (rvol >= 1.3)
 
                 if is_long_trigger or is_short_trigger or item.get("simulated_triggered", False):
                     status = "TRIGGERED"
+                elif session_active and is_past_1130_am() and ("candle_close" not in item):
+                    status = "EXPIRED_NO_TRIGGER"
+                    veto_reason = "Session passed 11:30 AM without breakout. Setup void for today."
 
         # Attach Strategy Execution Ticket
         bias = "BULLISH" if "BULL" in item.get("regime", "").upper() else (
