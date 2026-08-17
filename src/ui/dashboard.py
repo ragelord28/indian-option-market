@@ -35,6 +35,7 @@ from src.data import (
     get_best_strike,
     build_optimal_strategy,
 )
+from src.data.upstox_auth import fetch_and_save_token, get_login_url
 from src.radar.morning_radar import run_morning_radar
 from src.scanner.eod_scanner import run_eod_scanner, check_morning_gap_veto
 from src.scanner.universe import get_lot_size
@@ -130,6 +131,44 @@ st.sidebar.image("https://img.icons8.com/color/96/bullish.png", width=60)
 st.sidebar.title("Command Center")
 st.sidebar.caption("Indian Option Market Platform v2.5")
 
+# 1-Click Upstox OAuth Handling
+if "code" in st.query_params:
+    auth_code = st.query_params["code"]
+    try:
+        token = fetch_and_save_token(auth_code)
+        st.query_params.clear()
+        st.sidebar.success("🟢 Upstox Logged In (Real-time Ticks Active)")
+    except Exception as e:
+        st.sidebar.error(f"Upstox Auth Failed: {e}")
+
+upstox_token_file = Path("data/tokens/upstox_token.json")
+upstox_alt_file = Path("data/upstox_token.json")
+has_active_token = bool(
+    os.getenv("UPSTOX_ACCESS_TOKEN")
+    or (upstox_token_file.exists() and upstox_token_file.stat().st_size > 0)
+    or (upstox_alt_file.exists() and upstox_alt_file.stat().st_size > 0)
+)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔌 Upstox Broker Integration")
+
+if has_active_token:
+    st.sidebar.success("🟢 Upstox Live Connected")
+    login_url = get_login_url()
+    st.sidebar.markdown(f"[🔄 Re-authenticate Upstox]({login_url})", unsafe_allow_html=True)
+else:
+    login_url = get_login_url()
+    st.sidebar.warning("🔴 Upstox Token Offline / Unlinked")
+    st.sidebar.markdown(
+        f"""<a href="{login_url}" target="_self">
+            <button style="width:100%; background-color:#2563EB; color:white; border:none; padding:0.5rem 1rem; border-radius:6px; font-weight:700; cursor:pointer;">
+                🔑 1-Click Upstox Login
+            </button>
+        </a>""",
+        unsafe_allow_html=True,
+    )
+st.sidebar.markdown("---")
+
 selected_tab = st.sidebar.radio(
     "Navigation",
     [
@@ -154,12 +193,21 @@ if selected_tab == "📊 D-1 Command Center":
     st.markdown('<p class="main-title">📊 D-1 Actionable Command Center</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-title">Pre-market setups evaluated against Sector Limit, Event Blackout, 1.5x ATR Gap Veto, and 09:30 ORB Triggers</p>', unsafe_allow_html=True)
 
-    if st.button("⚡ Run Live Morning Radar (09:30 ORB Scan)", type="primary"):
-        with st.spinner("Fetching live 15m candle data from Upstox / Market..."):
-            from src.radar.morning_radar import scan_morning_radar
-            scan_morning_radar()
-            st.success("Radar scan complete! Watchlist updated.")
-            st.rerun()
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("⚡ Run Live Morning Radar (09:30 ORB Scan)", type="primary"):
+            with st.spinner("Fetching live 15m candle data from Upstox / Market..."):
+                from src.radar.morning_radar import scan_morning_radar
+                scan_morning_radar()
+                st.success("Radar scan complete! Watchlist updated.")
+                st.rerun()
+    with col2:
+        if st.button("🌙 Run D-1 Nightly Scanner (Post 4:00 PM)", type="secondary"):
+            with st.spinner("Scanning 158 F&O stocks with today's closing prices..."):
+                from src.scanner.eod_scanner import run_eod_scanner
+                run_eod_scanner()
+                st.success("D-1 Watchlist updated with today's market close!")
+                st.rerun()
 
     scan_ts = radar_data.get("timestamp", datetime.now().isoformat())
     st.caption(f"⏱️ **Last Radar Scan**: `{scan_ts}` | **Market Session**: {'🟢 LIVE SESSION' if is_market_session_active() else '🌙 CLOSED / PRE-MARKET'}")
