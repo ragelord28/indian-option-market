@@ -1,12 +1,17 @@
-"""
-F&O Stock Universe Definitions.
+import gzip
+import io
+import json
+import logging
+import re
+import urllib.request
+from pathlib import Path
+from typing import List, Dict, Set
 
-Defines:
-1. TOP_50_FNO: Curated Top 50 liquid Indian FnO stock symbols for Agent 1.5 Radar.
-2. FULL_FNO_UNIVERSE: Complete universe (~160+ major FnO equities) for full backtesting.
-"""
+import pandas as pd
 
-TOP_50_FNO = [
+logger = logging.getLogger(__name__)
+
+_TOP_50_RAW = [
     "RELIANCE",
     "HDFCBANK",
     "ICICIBANK",
@@ -60,7 +65,7 @@ TOP_50_FNO = [
 ]
 
 # Combined unique list of full NSE F&O universe
-_FULL_LIST = TOP_50_FNO + [
+_FULL_LIST = _TOP_50_RAW + [
     "AARTIIND",
     "ABB",
     "ABBOTINDIA",
@@ -313,9 +318,78 @@ LOT_SIZE_MAP = {
 }
 
 
+def sync_universe_from_exchange_master(
+    cache_path: Path | str = Path("data/cache/valid_optstk_symbols.json"),
+) -> List[str]:
+    """
+    Download and parse Upstox NSE Instrument Master GZ CSV, filter OPTSTK instruments,
+    extract valid underlying symbols and exact lot sizes, cache to JSON, and return
+    the sorted list of verified OPTSTK symbols.
+    """
+    c_path = Path(cache_path)
+    c_path.parent.mkdir(parents=True, exist_ok=True)
+
+    url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz"
+    symbols_map: Dict[str, int] = {}
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            with gzip.GzipFile(fileobj=io.BytesIO(response.read())) as gz:
+                df = pd.read_csv(gz)
+
+        optstk = df[df["instrument_type"] == "OPTSTK"]
+        pattern = re.compile(r"^([A-Z0-9\&\-]+?)\d{2}[A-Z]{3}")
+
+        for _, row in optstk.iterrows():
+            ts = str(row.get("tradingsymbol", ""))
+            m = pattern.match(ts)
+            if m:
+                sym = m.group(1)
+                lot = int(row.get("lot_size", 250))
+                symbols_map[sym] = lot
+
+        if symbols_map:
+            with open(c_path, "w", encoding="utf-8") as f:
+                json.dump(symbols_map, f, indent=2)
+            LOT_SIZE_MAP.update(symbols_map)
+    except Exception as err:
+        logger.warning(f"Could not fetch Upstox exchange master: {err}")
+        if c_path.exists():
+            try:
+                with open(c_path, "r", encoding="utf-8") as f:
+                    symbols_map = json.load(f)
+                    LOT_SIZE_MAP.update(symbols_map)
+            except Exception:
+                pass
+
+    valid_symbols = set(symbols_map.keys()) if symbols_map else set()
+    return sorted(list(valid_symbols))
+
+
+def _get_verified_universe(raw_list: List[str]) -> List[str]:
+    c_path = Path("data/cache/valid_optstk_symbols.json")
+    if c_path.exists() and c_path.stat().st_size > 0:
+        try:
+            with open(c_path, "r", encoding="utf-8") as f:
+                valid_map = json.load(f)
+                valid_set = set(valid_map.keys())
+                LOT_SIZE_MAP.update(valid_map)
+                indices = {"NIFTY50", "NIFTY", "BANKNIFTY", "FINNIFTY"}
+                return [s for s in raw_list if s in valid_set or s in indices]
+        except Exception:
+            pass
+    return raw_list
+
+
+FULL_FNO_UNIVERSE = _get_verified_universe(list(dict.fromkeys(_FULL_LIST)))
+TOP_50_FNO = _get_verified_universe(_TOP_50_RAW)
+
+
 def get_lot_size(symbol: str) -> int:
     """Resolve official NSE lot size for symbol."""
     clean_sym = symbol.replace(".NS", "").replace("^", "").strip().upper()
     return LOT_SIZE_MAP.get(clean_sym, 250)
+
 
 

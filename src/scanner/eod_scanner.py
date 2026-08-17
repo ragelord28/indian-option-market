@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.scanner.universe import FULL_FNO_UNIVERSE, get_sector
+from src.scanner.universe import FULL_FNO_UNIVERSE, get_sector, sync_universe_from_exchange_master
 from src.data.yahoo_provider import YahooFinanceProvider
 from src.data.option_analytics import calculate_vrp
 from src.data.strategy_builder import build_optimal_strategy
@@ -160,6 +160,11 @@ def run_eod_scanner(
     Execute D-1 Nightly Scanner across universe and output JSON & Markdown watchlists.
     Enforces dynamic non-saturating 4-pillar conviction scoring.
     """
+    try:
+        sync_universe_from_exchange_master()
+    except Exception as err:
+        logger.warning(f"Exchange master sync during scan skipped: {err}")
+
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
