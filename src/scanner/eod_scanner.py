@@ -11,11 +11,14 @@ computes Volatility Risk Premium (VRP), and provides 09:15 AM Gap Veto checking.
 from datetime import datetime, timedelta
 import json
 import os
+import logging
 from pathlib import Path
 import sys
 from typing import Tuple, Dict, Any
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # Ensure root directory is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -294,7 +297,8 @@ def run_eod_scanner(
                     }
                 )
 
-        except Exception:
+        except Exception as err:
+            logger.warning(f"Skipping symbol '{symbol}' due to fetch/calc error: {err}")
             continue
 
     # Sort all qualifying candidates by conviction_score descending

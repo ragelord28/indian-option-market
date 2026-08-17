@@ -22,6 +22,7 @@ from typing import Dict, Any, List
 import pytz
 
 from src.data.upstox_provider import fetch_live_quotes_batch
+from src.radar.morning_radar import is_market_session_active
 
 logger = logging.getLogger(__name__)
 
@@ -150,8 +151,10 @@ def monitor_active_trades(
         alert_msg = None
         action_type = None
 
-        # Priority 1: 15:10 PM Mandatory EOD Square-Off (highest priority)
-        if current_time >= time_1510:
+        time_1530 = time(15, 30)
+
+        # Priority 1: 15:10 PM Mandatory EOD Square-Off (highest priority, strictly during live session 15:10-15:30)
+        if is_market_session_active(now_ist) and (time_1510 <= current_time <= time_1530):
             alert_msg = "🛑 15:10 SQUARE OFF: Market closing in 20 mins. Exit immediately to avoid broker auto-square-off penalty."
             action_type = "EOD_EXIT"
 
@@ -184,8 +187,8 @@ def monitor_active_trades(
                 action_type = "TRAILING_SL"
                 pos["trailing_sl_active"] = True
 
-        # Priority 5: 13:30 Time Stop (-3% to +3% stagnant trade)
-        if alert_msg is None and current_time >= time_1330 and -3.0 <= spot_pnl_pct <= 3.0:
+        # Priority 5: 13:30 Time Stop (-3% to +3% stagnant trade, strictly during live session 13:30-15:10)
+        if alert_msg is None and is_market_session_active(now_ist) and (time_1330 <= current_time < time_1510) and -3.0 <= spot_pnl_pct <= 3.0:
             alert_msg = "⏰ 13:30 TIME STOP: Trade stagnant for 4 hours. Exit on broker to avoid theta decay."
             action_type = "TIME_STOP"
 

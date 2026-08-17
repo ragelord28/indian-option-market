@@ -39,7 +39,7 @@ def is_market_session_active(dt: datetime | None = None) -> bool:
     if dt.weekday() >= 5:  # Weekend
         return False
     time_min = dt.hour * 60 + dt.minute
-    if time_min < 9 * 60 + 15:  # Before 09:15 AM IST
+    if time_min < 9 * 60 + 15 or time_min > 15 * 60 + 30:  # Outside 09:15 AM - 03:30 PM IST
         return False
     return True
 

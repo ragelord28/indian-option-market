@@ -193,6 +193,11 @@ if st.sidebar.button("🧪 Ping Upstox Live Connection"):
     except Exception as err:
         st.sidebar.error(f"❌ Connection Failed: {err}")
 
+auto_refresh = st.sidebar.checkbox("🔄 Enable 5-Min Live Auto-Refresh", value=False)
+if auto_refresh:
+    st.markdown('<meta http-equiv="refresh" content="300">', unsafe_allow_html=True)
+    st.sidebar.caption("⏱️ Auto-refresh active: 5m interval")
+
 st.sidebar.markdown("---")
 
 selected_tab = st.sidebar.radio(
@@ -275,13 +280,6 @@ if active_alerts:
         if not has_chime_played:
             st.markdown('<audio autoplay style="display:none;"><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
             has_chime_played = True
-
-# Sidebar 5-Min Auto-Refresh Toggle
-st.sidebar.markdown("---")
-auto_refresh = st.sidebar.checkbox("🔄 Enable 5-Min Live Auto-Refresh", value=False)
-if auto_refresh:
-    st.markdown('<meta http-equiv="refresh" content="300">', unsafe_allow_html=True)
-    st.sidebar.caption("⏱️ Auto-refreshing every 5 mins (Rate-Limit Safe: 0.03% API capacity)")
 
 # -----------------------------------------------------------------------------
 # TAB 1: D-1 Command Center
