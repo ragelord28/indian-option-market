@@ -291,6 +291,7 @@ def run_eod_scanner(
                         "atr_14": round(atr14, 2),
                         "hv_20": round(hv20_pct, 1),
                         "vrp": round(vrp_pct, 1),
+                        "volume_20d_avg": round(float(vol_sma), 2),
                         "regime": regime,
                         "suggested_strategy": suggested_strategy,
                         "suggested_action": action,

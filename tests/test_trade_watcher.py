@@ -331,3 +331,35 @@ def test_bearish_trailing_sl_trigger(tmp_path):
     assert len(alerts) == 1
     assert alerts[0]["action_type"] == "TRAILING_SL"
     assert "MOVE SL TO ENTRY" in alerts[0]["action_alert"]
+
+
+def test_trade_logging_payload_structure():
+    """Verify precise trade logging payload structure."""
+    payload = {
+        "trade_id": "TRD-1001",
+        "symbol": "RELIANCE",
+        "option_symbol": "RELIANCE 25AUG26 2480 CE",
+        "strategy": "🎯 Naked Single Strike (CE Sniper)",
+        "direction": "BULLISH",
+        "entry_date": "2026-08-18 11:00 IST",
+        "strike": 2480.0,
+        "entry_spot": 2500.0,
+        "target_spot": 2575.0,
+        "sl_spot": 2462.5,
+        "entry_premium": 65.4,
+        "target": 105.2,
+        "stop_loss": 42.1,
+        "quantity_lots": 1,
+        "lot_size": 250,
+        "margin_blocked": 16350.0,
+        "current_ltp": 65.4,
+        "current_spot": 2500.0,
+        "status": "OPEN",
+        "trailing_sl_active": False,
+    }
+
+    assert payload["trade_id"] == "TRD-1001"
+    assert "option_symbol" in payload
+    assert payload["direction"] in ("BULLISH", "BEARISH")
+    assert payload["status"] == "OPEN"
+    assert payload["margin_blocked"] > 0

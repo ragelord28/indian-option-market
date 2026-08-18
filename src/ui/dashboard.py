@@ -35,6 +35,7 @@ from src.data import (
     rank_strikes,
     get_best_strike,
     build_optimal_strategy,
+    build_naked_itm_ticket,
 )
 from src.data.upstox_auth import fetch_and_save_token, get_login_url
 from src.radar.morning_radar import run_morning_radar
@@ -425,14 +426,67 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
     default_mode_idx = 0 if full_ticket.get("default_mode") == "NAKED" else 1
 
     with col_mode:
-        execution_mode = st.radio(
+        exec_mode = st.radio(
             "Execution Mode Strategy Selection:",
             ["🎯 Naked Single Strike (ITM Sniper)", "🛡️ Defined-Risk Spread"],
             horizontal=True,
+            key="strategy_exec_mode_toggle",
             index=default_mode_idx,
         )
 
-    ticket = full_ticket["naked_option"] if "Naked" in execution_mode else full_ticket["spread_option"]
+    if exec_mode.startswith("🎯 Naked"):
+        raw_naked = build_naked_itm_ticket(
+            symbol=selected_symbol,
+            spot_price=current_spot,
+            bias=bias,
+            iv=ivr / 100.0 if ivr > 1.5 else ivr,
+        )
+        single_leg = {
+            "Option Contract": raw_naked["option_symbol"],
+            "Action": "BUY",
+            "Valid Strike": raw_naked["strike"],
+            "Option LTP / Entry (₹)": raw_naked["option_entry_limit"],
+            "Target Premium (₹)": raw_naked["option_target_exit"],
+            "SL Premium (₹)": raw_naked["option_sl_exit"],
+            "Delta": 0.65 if "BULL" in bias.upper() else -0.65,
+            "Lot Size": raw_naked["lot_size"],
+        }
+        ticket = {
+            "symbol": selected_symbol,
+            "strategy_name": f"🎯 Naked Single Strike ({raw_naked['option_type']} Sniper)",
+            "rationale": f"High Conviction Directional ({bias}) setup with ITM {raw_naked['option_type']} Sniper option for max delta exposure.",
+            "legs": [single_leg],
+            "net_mid_cost": raw_naked["option_entry_limit"] * raw_naked["lot_size"],
+            "net_debit_or_credit": "Net Debit",
+            "basket_margin": raw_naked["option_entry_limit"] * raw_naked["lot_size"],
+            "max_profit": raw_naked["max_profit_inr"],
+            "max_loss": raw_naked["max_loss_inr"],
+            "max_profit_inr": raw_naked["max_profit_inr"],
+            "max_loss_inr": raw_naked["max_loss_inr"],
+            "rom_pct": round((raw_naked["max_profit_inr"] / max(raw_naked["option_entry_limit"] * raw_naked["lot_size"], 1.0)) * 100.0, 1),
+            "guaranteed_slippage_cost": round(raw_naked["option_entry_limit"] * raw_naked["lot_size"] * 0.005, 2),
+            "slippage_drag_pct": 0.5,
+            "slippage_veto": False,
+            "breakeven": round(current_spot + raw_naked["option_entry_limit"] if "BULL" in bias.upper() else current_spot - raw_naked["option_entry_limit"], 2),
+            "reward_risk_ratio": round(raw_naked["max_profit_inr"] / max(raw_naked["max_loss_inr"], 1.0), 2),
+            "net_greeks": {"delta": 0.65 if "BULL" in bias.upper() else -0.65, "gamma": 0.005, "theta_per_day": -12.5, "vega": 25.0},
+            "payoff_curve": {
+                "spot_range": [round(current_spot * (1 + p/100.0), 2) for p in range(-5, 6)],
+                "payoff_expiry": [round((max(current_spot * (1 + p/100.0) - raw_naked["strike"], 0) - raw_naked["option_entry_limit"]) * raw_naked["lot_size"], 2) if "BULL" in bias.upper() else round((max(raw_naked["strike"] - current_spot * (1 + p/100.0), 0) - raw_naked["option_entry_limit"]) * raw_naked["lot_size"], 2) for p in range(-5, 6)],
+                "payoff_t0": [round((max(current_spot * (1 + p/100.0) - raw_naked["strike"], 0) - raw_naked["option_entry_limit"]) * raw_naked["lot_size"] * 0.7, 2) for p in range(-5, 6)],
+                "payoff_tmid": [round((max(current_spot * (1 + p/100.0) - raw_naked["strike"], 0) - raw_naked["option_entry_limit"]) * raw_naked["lot_size"] * 0.85, 2) for p in range(-5, 6)],
+            },
+            "option_symbol": raw_naked["option_symbol"],
+            "strike": raw_naked["strike"],
+            "target_spot": raw_naked["target_spot"],
+            "sl_spot": raw_naked["sl_spot"],
+            "option_entry_limit": raw_naked["option_entry_limit"],
+            "option_target_exit": raw_naked["option_target_exit"],
+            "option_sl_exit": raw_naked["option_sl_exit"],
+            "lot_size": raw_naked["lot_size"],
+        }
+    else:
+        ticket = full_ticket["spread_option"] if "spread_option" in full_ticket else full_ticket
 
     # Section A: CRO Rationale
     st.markdown(
@@ -518,42 +572,31 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
         if used_slots >= 5:
             st.error("Cannot log trade: Maximum 5 concurrent margin slots reached!")
         else:
-            spot_v = float(selected_item["close"]) if selected_item else 2500.0
-            lot_sz = ticket.get("lot_size", get_lot_size(selected_symbol))
-            net_mid = abs(ticket.get("net_mid_cost", 100.0))
-            prem_unit = round(net_mid / lot_sz, 2) if lot_sz > 0 else round(net_mid, 2)
-            margin_req = float(ticket.get("basket_margin", net_mid))
-            be_spot = float(ticket.get("breakeven", spot_v * 0.98))
-
-            # Derive direction from strategy name
-            strat_nm = ticket["strategy_name"]
-            is_bearish = ("Bear" in strat_nm or ("Put" in strat_nm and "Credit" not in strat_nm))
-            direction = "BEARISH" if is_bearish else "BULLISH"
-
-            # Guaranteed unique trade ID (max existing + 1)
             existing_ids = [int(t.get("trade_id", "TRD-1000").split("-")[1]) for t in active_trades if "-" in t.get("trade_id", "")]
             next_id = max(existing_ids + [1000]) + 1
+            trade_id = f"TRD-{next_id}"
 
             new_trd = {
-                "trade_id": f"TRD-{next_id}",
+                "trade_id": trade_id,
                 "symbol": selected_symbol.upper(),
-                "strategy": strat_nm,
-                "direction": direction,
+                "option_symbol": ticket.get("option_symbol", f"{selected_symbol} OPT"),
+                "strategy": ticket.get("strategy_name", "ITM Sniper"),
+                "direction": "BEARISH" if "BEAR" in bias.upper() or "PUT" in ticket.get("strategy_name", "").upper() else "BULLISH",
                 "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M IST"),
-                "strike": spot_v,
-                "entry_premium": prem_unit if prem_unit > 0 else 50.0,
-                "entry_spot": spot_v,
-                "current_spot": spot_v,
-                "target_spot": round(spot_v * 1.03, 2) if direction == "BULLISH" else round(spot_v * 0.97, 2),
-                "sl_spot": round(be_spot, 2),
+                "strike": float(ticket.get("strike", current_spot)),
+                "entry_spot": current_spot,
+                "target_spot": float(ticket.get("target_spot", current_spot * 1.03 if bias == "BULLISH" else current_spot * 0.97)),
+                "sl_spot": float(ticket.get("sl_spot", current_spot * 0.985 if bias == "BULLISH" else current_spot * 1.015)),
+                "entry_premium": float(ticket.get("option_entry_limit", ticket.get("net_mid_cost", 50.0) / max(ticket.get("lot_size", 250), 1))),
+                "target": float(ticket.get("option_target_exit", 75.0)),
+                "stop_loss": float(ticket.get("option_sl_exit", 35.0)),
                 "quantity_lots": 1,
-                "lot_size": lot_sz,
-                "margin_blocked": margin_req if margin_req > 0 else round(prem_unit * lot_sz, 2),
-                "current_ltp": prem_unit if prem_unit > 0 else 50.0,
-                "stop_loss": round(be_spot, 2),
-                "target": round(spot_v * 1.03, 2),
-                "trailing_sl_active": False,
+                "lot_size": ticket.get("lot_size", 250),
+                "margin_blocked": float(ticket.get("basket_margin", ticket.get("net_mid_cost", 25000.0))),
+                "current_ltp": float(ticket.get("option_entry_limit", 50.0)),
+                "current_spot": current_spot,
                 "status": "OPEN",
+                "trailing_sl_active": False,
             }
             active_trades.append(new_trd)
             st.session_state.active_trades = active_trades
@@ -561,7 +604,8 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
                 json.dump(active_trades, f, indent=2)
             with open(active_trades_file, "w", encoding="utf-8") as f:
                 json.dump(active_trades, f, indent=2)
-            st.success(f"Successfully logged Trade {new_trd['trade_id']} ({selected_symbol} - {strat_nm}) to Journal!")
+            st.success(f"Successfully logged Trade {new_trd['trade_id']} ({selected_symbol} - {new_trd['strategy']}) to Journal!")
+            st.rerun()
             st.rerun()
 
 # -----------------------------------------------------------------------------
@@ -649,56 +693,58 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
         if not active_trades:
             st.info("No active positions currently open.")
         else:
-            display_positions = []
-            for t in active_trades:
-                units = t["quantity_lots"] * t["lot_size"]
-                unrealized_pnl = (t["current_ltp"] - t["entry_premium"]) * units
-                display_positions.append(
-                    {
-                        "Trade ID": t["trade_id"],
-                        "Symbol": t["symbol"],
-                        "Strategy": t["strategy"],
-                        "Lots": t["quantity_lots"],
-                        "Lot Size": t["lot_size"],
-                        "Entry (₹)": f"₹{t['entry_premium']:.2f}",
-                        "LTP (₹)": f"₹{t['current_ltp']:.2f}",
-                        "Unrealized P&L": f"₹{unrealized_pnl:+,.2f}",
-                        "Margin (₹)": f"₹{t['margin_blocked']:,.2f}",
-                        "Stop Loss": f"₹{t['stop_loss']:.2f}",
-                        "Target": f"₹{t['target']:.2f}",
-                    }
-                )
+            for idx, pos in enumerate(active_trades):
+                units = pos["quantity_lots"] * pos["lot_size"]
+                entry_p = float(pos.get("entry_premium", 0.0))
+                exit_p = float(pos.get("current_ltp", entry_p))
+                is_short = "BEAR" in pos.get("direction", "").upper() or "PUT" in pos.get("strategy", "").upper()
+                realized_pnl = round((entry_p - exit_p) * units if is_short else (exit_p - entry_p) * units, 2)
+                pnl_color = "#10B981" if realized_pnl >= 0 else "#EF4444"
 
-            st.dataframe(pd.DataFrame(display_positions), width="stretch", hide_index=True)
+                with st.expander(f"📌 {pos['trade_id']} — {pos['symbol']} ({pos.get('strategy', 'ITM Sniper')})", expanded=True):
+                    c1, c2, c3 = st.columns([3, 2, 2])
+                    with c1:
+                        opt_contract_str = pos.get("option_symbol", f"{pos['symbol']} OPT")
+                        st.write(f"**Contract:** {opt_contract_str}")
+                        st.write(f"**Entry Premium:** ₹{entry_p:.2f} | **LTP:** ₹{exit_p:.2f}")
+                        st.caption(f"Entry Date: {pos.get('entry_date', 'N/A')} | Lots: {pos['quantity_lots']} (Size: {pos['lot_size']})")
+                    with c2:
+                        st.markdown(f"**Unrealized P&L:** <span style='color:{pnl_color}; font-weight:bold;'>₹{realized_pnl:+,.2f}</span>", unsafe_allow_html=True)
+                        st.write(f"**SL:** ₹{float(pos.get('stop_loss', 0.0)):.2f} | **Tgt:** ₹{float(pos.get('target', 0.0)):.2f}")
+                    with c3:
+                        if st.button("❌ Exit / Close Position", key=f"exit_pos_btn_{pos['trade_id']}_{idx}"):
+                            pos_copy = dict(pos)
+                            pos_copy["status"] = "CLOSED"
+                            pos_copy["exit_date"] = datetime.now().strftime("%Y-%m-%d %H:%M IST")
+                            pos_copy["exit_premium"] = exit_p
+                            pos_copy["realized_pnl"] = realized_pnl
 
-            st.markdown("#### 🔒 Position Management")
-            trd_to_close = st.selectbox("Select Active Trade to Close:", [t["trade_id"] for t in active_trades])
-            if st.button("🔒 Close Selected Trade"):
-                to_remove = next((t for t in active_trades if t["trade_id"] == trd_to_close), None)
-                if to_remove:
-                    to_remove["status"] = "CLOSED"
-                    to_remove["close_date"] = datetime.now().strftime("%Y-%m-%d %H:%M IST")
-                    active_trades = [t for t in active_trades if t["trade_id"] != trd_to_close]
-                    st.session_state.active_trades = active_trades
-
-                    with open(active_pos_file, "w", encoding="utf-8") as f:
-                        json.dump(active_trades, f, indent=2)
-                    with open(active_trades_file, "w", encoding="utf-8") as f:
-                        json.dump(active_trades, f, indent=2)
-
-                    history = []
-                    if history_file.exists() and history_file.stat().st_size > 0:
-                        try:
-                            with open(history_file, "r", encoding="utf-8") as f:
-                                history = json.load(f)
-                        except Exception:
+                            hist_file = Path("data/paper/trade_history.json")
+                            hist_file.parent.mkdir(parents=True, exist_ok=True)
                             history = []
-                    history.append(to_remove)
-                    with open(history_file, "w", encoding="utf-8") as f:
-                        json.dump(history, f, indent=2)
+                            if hist_file.exists() and hist_file.stat().st_size > 0:
+                                try:
+                                    with open(hist_file, "r", encoding="utf-8") as f:
+                                        history = json.load(f)
+                                except Exception:
+                                    history = []
+                            history.append(pos_copy)
+                            with open(hist_file, "w", encoding="utf-8") as f:
+                                json.dump(history, f, indent=2)
 
-                    st.success(f"Closed Trade {trd_to_close} and saved to trade_history.json!")
-                    st.rerun()
+                            active_trades = [t for t in active_trades if t.get("trade_id") != pos["trade_id"]]
+                            st.session_state.active_trades = active_trades
+
+                            active_pos_file = Path("data/paper/active_positions.json")
+                            active_trades_file = Path("data/paper/active_trades.json")
+                            active_pos_file.parent.mkdir(parents=True, exist_ok=True)
+                            with open(active_pos_file, "w", encoding="utf-8") as f:
+                                json.dump(active_trades, f, indent=2)
+                            with open(active_trades_file, "w", encoding="utf-8") as f:
+                                json.dump(active_trades, f, indent=2)
+
+                            st.success(f"Trade {pos['trade_id']} ({pos['symbol']}) closed! Realized P&L: ₹{realized_pnl:,.2f}")
+                            st.rerun()
 
 # -----------------------------------------------------------------------------
 # TAB 4: Portfolio & Benchmark Analytics

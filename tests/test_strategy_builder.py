@@ -238,3 +238,22 @@ def test_actionable_option_ticket_target_and_sl_premiums():
     assert ticket["max_loss_inr"] > 0.0
     assert ticket["lot_size"] == 5000
 
+
+def test_naked_vs_optimal_strategy_schemas():
+    """Verify build_naked_itm_ticket vs build_optimal_strategy output schemas."""
+    from src.data.strategy_builder import build_naked_itm_ticket, build_optimal_strategy
+    import pandas as pd
+
+    naked = build_naked_itm_ticket("RELIANCE", 2500.0, "BULLISH", iv=0.22, lot_size=250)
+    assert "option_symbol" in naked
+    assert "option_entry_limit" in naked
+    assert "option_target_exit" in naked
+    assert "option_sl_exit" in naked
+    assert "max_profit_inr" in naked
+    assert "max_loss_inr" in naked
+
+    optimal = build_optimal_strategy("RELIANCE", 2500.0, "BULLISH", ivr=40.0, vrp=2.0, option_chain_df=pd.DataFrame())
+    assert "naked_option" in optimal
+    assert "spread_option" in optimal
+    assert "default_mode" in optimal
+
