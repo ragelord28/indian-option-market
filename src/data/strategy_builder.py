@@ -136,6 +136,11 @@ def _build_ticket_from_legs(
             from scipy.stats import norm
             nd1 = float(norm.pdf(d1))
 
+            if opt_type == "CE":
+                delta_val = float(norm.cdf(d1))
+            else:
+                delta_val = float(norm.cdf(d1) - 1.0)
+
             gamma_val = float(nd1 / (spot_price * sigma * sqrt_T))
             vega_val = float(spot_price * nd1 * sqrt_T / 100.0)
 

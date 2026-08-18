@@ -257,3 +257,38 @@ def test_naked_vs_optimal_strategy_schemas():
     assert "spread_option" in optimal
     assert "default_mode" in optimal
 
+
+import random
+import pytest
+from src.scanner.universe import FULL_FNO_UNIVERSE
+
+# Pre-generate deterministic spot prices and biases for each symbol
+random.seed(42)
+test_cases = [
+    (symbol, random.uniform(40.0, 100000.0), random.choice(["BULLISH", "BEARISH"]), random.uniform(0.15, 0.90))
+    for symbol in FULL_FNO_UNIVERSE
+]
+
+@pytest.mark.parametrize("symbol, spot, bias, iv", test_cases)
+def test_full_fno_universe_strategy_generation(symbol, spot, bias, iv):
+    """Verify that every F&O stock can be processed by snap_to_strike_grid and build_naked_itm_ticket without crashing, including extreme spot prices."""
+    from src.data.strategy_builder import build_naked_itm_ticket
+    from src.data.option_analytics import snap_to_strike_grid, get_strike_step
+
+    # Verify strike snapping logic doesn't crash on this random float
+    step = get_strike_step(spot)
+    snapped_strike = snap_to_strike_grid(spot, step)
+    assert snapped_strike > 0.0
+
+    # Verify ticket construction doesn't crash
+    ticket = build_naked_itm_ticket(
+        symbol=symbol,
+        spot_price=spot,
+        bias=bias,
+        iv=iv,
+    )
+
+    assert ticket["symbol"] == symbol
+    assert ticket["strike"] > 0
+    assert ticket["max_loss_inr"] > 0
+    assert ticket["max_profit_inr"] > 0
