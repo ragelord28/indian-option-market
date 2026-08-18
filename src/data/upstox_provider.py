@@ -13,9 +13,35 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import requests
+from requests.exceptions import Timeout, ConnectionError, HTTPError
 from dotenv import load_dotenv
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from src.data.base_provider import BaseDataProvider, validate_schema
+
+def _is_transient_error(exception):
+    if isinstance(exception, (Timeout, ConnectionError)):
+        return True
+    if isinstance(exception, HTTPError) and exception.response is not None:
+        return exception.response.status_code >= 500
+    return False
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(Exception)
+)
+def _fetch_with_retry(u, h, p):
+    response = requests.get(u, headers=h, params=p, timeout=8)
+    try:
+        response.raise_for_status()
+    except HTTPError as e:
+        if _is_transient_error(e):
+            raise
+        else:
+            return response
+    return response
+
 
 logger = logging.getLogger(__name__)
 
@@ -355,7 +381,7 @@ class UpstoxProvider(BaseDataProvider):
                     "Authorization": f"Bearer {self.access_token}",
                 }
                 params = {"instrument_key": ",".join(instrument_keys)}
-                res = requests.get(url, headers=headers, params=params, timeout=8)
+                res = _fetch_with_retry(url, headers, params)
                 if res.status_code == 200:
                     data = res.json().get("data", {})
                     for ik, qdata in data.items():
