@@ -202,6 +202,10 @@ if auto_refresh:
     st.markdown('<meta http-equiv="refresh" content="300">', unsafe_allow_html=True)
     st.sidebar.caption("⏱️ Auto-refresh active: 5m interval")
 
+if st.sidebar.button("🗑️ Reset Session State & Cache"):
+    st.session_state.clear()
+    st.rerun()
+
 st.sidebar.markdown("---")
 
 selected_tab = st.sidebar.radio(
@@ -300,12 +304,14 @@ if selected_tab == "📊 D-1 Command Center":
         table_rows = []
         for r in radar_items:
             st_code = r.get("status", "AWAITING_ORB")
-            if st_code == "EXPIRED_NO_TRIGGER":
+            trig_at = r.get("triggered_at", "09:30 IST")
+            status_display = f"🟢 TRIGGERED ({trig_at})" if st_code == "TRIGGERED" else st_code
+            if st_code == "TRIGGERED":
+                status_badge = status_display
+            elif st_code == "EXPIRED_NO_TRIGGER":
                 status_badge = "⚪ EXPIRED_NO_TRIGGER"
             elif not is_market_session_active():
                 status_badge = "🟡 AWAITING ORB (Pre-Market)"
-            elif st_code == "TRIGGERED":
-                status_badge = "🟢 TRIGGERED"
             elif st_code == "AWAITING_ORB":
                 status_badge = "🟡 AWAITING ORB"
             else:

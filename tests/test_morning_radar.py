@@ -271,3 +271,64 @@ def test_conviction_priority_queue(tmp_path):
     triggered_scores = [i["conviction_score"] for i in triggered]
     queued_scores = [i["conviction_score"] for i in queued]
     assert min(triggered_scores) > max(queued_scores)
+
+
+def test_bearish_breakdown_directionality_and_trigger_zone(tmp_path):
+    """
+    Verify:
+    1. Bearish stock with current_spot > trigger_zone (entry) stays AWAITING_ORB (NOT TRIGGERED).
+    2. Bearish stock with current_spot <= trigger_zone (entry) returns TRIGGERED with timestamp.
+    """
+    mock_wl_awaiting = {
+        "timestamp": "2026-08-16T09:00:00",
+        "total_scanned": 1,
+        "qualifying_count": 1,
+        "top_bearish": [
+            {
+                "symbol": "PAGEIND",
+                "bias": "BEARISH",
+                "regime": "Bearish Breakdown",
+                "suggested_action": "BUY PUT",
+                "close": 36965.0,  # current_spot > entry (36750)
+                "simulated_open": 36965.0,
+                "entry": 36750.0,
+                "stop_loss": 37200.0,
+                "target": 36000.0,
+                "atr_14": 500.0,
+                "conviction_score": 85.0,
+                "has_event_risk": False,
+                "orb_high": 37100.0,
+                "orb_low": 36800.0,  # orb_width = 300 (0.3*500=150 <= 300 <= 750=1.5*500)
+                "candle_close": 36700.0,  # 15m close <= orb_low (36700 <= 36800)
+                "rvol": 1.5,
+            }
+        ],
+        "top_bullish": [],
+        "top_volatility_harvest": [],
+    }
+
+    wl_file = tmp_path / "watchlist_latest.json"
+    radar_file = tmp_path / "radar_latest.json"
+    with open(wl_file, "w", encoding="utf-8") as f:
+        json.dump(mock_wl_awaiting, f, indent=2)
+
+    res = run_morning_radar(watchlist_path=wl_file, output_path=radar_file)
+    pageind_item = res["radar_items"][0]
+    # Since current_spot (36965) > trigger_zone (36750), it must NOT trigger
+    assert pageind_item["status"] == "AWAITING_ORB"
+    assert pageind_item["status"] != "TRIGGERED"
+
+    # Now test when current_spot <= trigger_zone (36700 <= 36750)
+    mock_wl_triggered = dict(mock_wl_awaiting)
+    mock_wl_triggered["top_bearish"] = [
+        dict(mock_wl_awaiting["top_bearish"][0], close=36700.0)
+    ]
+
+    with open(wl_file, "w", encoding="utf-8") as f:
+        json.dump(mock_wl_triggered, f, indent=2)
+
+    res2 = run_morning_radar(watchlist_path=wl_file, output_path=radar_file)
+    pageind_trig = res2["radar_items"][0]
+    assert pageind_trig["status"] == "TRIGGERED"
+    assert pageind_trig["triggered_at"] is not None
+    assert "Breakout Confirmed" in pageind_trig["orb_reason"]

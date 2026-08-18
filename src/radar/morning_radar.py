@@ -199,6 +199,22 @@ def run_morning_radar(
             rvol = float(item.get("rvol", 1.0))
             bar_0_vol = 0.0
 
+        # Determine Bias and Entry/Trigger Zone
+        item_bias = item.get("bias")
+        if not item_bias:
+            reg = item.get("regime", "").upper()
+            sugg = item.get("suggested_action", "").upper()
+            if "BULL" in reg or "BUY CALL" in sugg or "CALL" in sugg:
+                bias = "BULLISH"
+            elif "BEAR" in reg or "BUY PUT" in sugg or "PUT" in sugg:
+                bias = "BEARISH"
+            else:
+                bias = "RANGEBOUND"
+        else:
+            bias = str(item_bias).upper()
+
+        entry_val = float(item.get("entry", close_p))
+        triggered_at = None
         veto_reason = None
         status = "AWAITING_ORB"
 
@@ -244,17 +260,24 @@ def run_morning_radar(
                     status = "EXPIRED_NO_TRIGGER"
                     veto_reason = "Session passed 11:30 AM without breakout. Setup void for today."
                 else:
-                    # Check 09:30 ORB Trigger (15m Candle Close)
-                    is_long_trigger = (candle_close > orb_high + (0.001 * close_p)) and (rvol >= 1.3)
-                    is_short_trigger = (candle_close < orb_low - (0.001 * close_p)) and (rvol >= 1.3)
+                    # Check 09:30 ORB Trigger (15m Candle Close & Directional Spot Limit)
+                    if bias == "BULLISH":
+                        is_triggered = (candle_close >= orb_high) and (close_p >= entry_val)
+                    elif bias == "BEARISH":
+                        is_triggered = (candle_close <= orb_low) and (close_p <= entry_val)
+                    else:
+                        is_triggered = (candle_close >= orb_high and close_p >= entry_val) or (candle_close <= orb_low and close_p <= entry_val)
 
-                    if is_long_trigger or is_short_trigger or item.get("simulated_triggered", False):
+                    if is_triggered or item.get("simulated_triggered", False):
                         status = "TRIGGERED"
+                        try:
+                            import pytz
+                            now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
+                        except Exception:
+                            now_ist = datetime.now()
+                        triggered_at = item.get("triggered_at", now_ist.strftime("%H:%M IST"))
 
         # Attach Strategy Execution Ticket
-        bias = "BULLISH" if "BULL" in item.get("regime", "").upper() else (
-            "BEARISH" if "BEAR" in item.get("regime", "").upper() else "RANGEBOUND"
-        )
         ivr_val = float(item.get("ivr", 45.0))
         vrp_val = float(item.get("vrp", 5.0))
 
@@ -272,7 +295,13 @@ def run_morning_radar(
         orb_high_val = item.get("orb_high", close_p * 1.005)
         orb_low_val = item.get("orb_low", close_p * 0.995)
         candle_close_val = item.get("candle_close", close_p)
-        orb_reason = f"Spot ₹{candle_close_val:,.2f} inside ORB range ₹{orb_low_val:,.2f} - ₹{orb_high_val:,.2f}"
+
+        if status == "TRIGGERED":
+            orb_reason = f"Breakout Confirmed at {triggered_at}"
+        elif veto_reason:
+            orb_reason = veto_reason
+        else:
+            orb_reason = f"Spot ₹{candle_close_val:,.2f} inside ORB range ₹{orb_low_val:,.2f} - ₹{orb_high_val:,.2f}"
 
         radar_items.append(
             {
@@ -283,13 +312,14 @@ def run_morning_radar(
                 "bias": bias,
                 "suggested_action": item.get("suggested_action", "BUY CALL"),
                 "status": status,
+                "triggered_at": triggered_at,
                 "veto_reason": veto_reason,
                 "orb_reason": orb_reason,
                 "close": close_p,
-                "entry": item.get("entry", close_p),
+                "entry": entry_val,
                 "stop_loss": item.get("stop_loss", round(close_p * 0.98, 2)),
                 "target": item.get("target", round(close_p * 1.04, 2)),
-                "trigger_zone": f"₹{item.get('entry', close_p):,.2f}",
+                "trigger_zone": f"₹{entry_val:,.2f}",
                 "conviction_score": conv_score,
                 "vrp": vrp_val,
                 "ivr": ivr_val,
