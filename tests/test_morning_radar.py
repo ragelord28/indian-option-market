@@ -332,3 +332,55 @@ def test_bearish_breakdown_directionality_and_trigger_zone(tmp_path):
     assert pageind_trig["status"] == "TRIGGERED"
     assert pageind_trig["triggered_at"] is not None
     assert "Breakout Confirmed" in pageind_trig["orb_reason"]
+
+
+def test_locked_triggered_at_timestamp_across_runs(tmp_path):
+    """Test that an already-triggered stock preserves its initial triggered_at timestamp across multiple runs."""
+    mock_wl = {
+        "timestamp": "2026-08-16T09:00:00",
+        "total_scanned": 1,
+        "qualifying_count": 1,
+        "top_bullish": [
+            {
+                "symbol": "RELIANCE",
+                "bias": "BULLISH",
+                "regime": "Bullish Momentum",
+                "suggested_action": "BUY CALL",
+                "close": 2510.0,
+                "simulated_open": 2501.0,
+                "entry": 2500.0,
+                "stop_loss": 2480.0,
+                "target": 2550.0,
+                "atr_14": 25.0,
+                "conviction_score": 88.0,
+                "has_event_risk": False,
+                "orb_high": 2505.0,
+                "orb_low": 2495.0,
+                "candle_close": 2510.0,
+                "rvol": 2.0,
+            }
+        ],
+        "top_bearish": [],
+        "top_volatility_harvest": [],
+    }
+
+    wl_file = tmp_path / "watchlist_latest.json"
+    radar_file = tmp_path / "radar_latest.json"
+    with open(wl_file, "w", encoding="utf-8") as f:
+        json.dump(mock_wl, f, indent=2)
+
+    res1 = run_morning_radar(watchlist_path=wl_file, output_path=radar_file)
+    assert res1["radar_items"][0]["status"] == "TRIGGERED"
+    initial_timestamp = res1["radar_items"][0]["triggered_at"]
+    assert initial_timestamp is not None
+
+    with open(radar_file, "r", encoding="utf-8") as f:
+        saved_data = json.load(f)
+    saved_data["radar_items"][0]["triggered_at"] = "09:30 IST"
+    with open(radar_file, "w", encoding="utf-8") as f:
+        json.dump(saved_data, f, indent=2)
+
+    res2 = run_morning_radar(watchlist_path=wl_file, output_path=radar_file)
+    preserved_timestamp = res2["radar_items"][0]["triggered_at"]
+    assert preserved_timestamp == "09:30 IST"
+    assert "Breakout Confirmed at 09:30 IST" in res2["radar_items"][0]["orb_reason"]

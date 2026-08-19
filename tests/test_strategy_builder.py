@@ -258,6 +258,41 @@ def test_naked_vs_optimal_strategy_schemas():
     assert "default_mode" in optimal
 
 
+def test_delta_anchored_option_pricing_and_live_ltp():
+    """Verify build_naked_itm_ticket computes target and stop loss premiums logically anchored to entry premium with 0.65 delta and supports live_option_ltp."""
+    from src.data.strategy_builder import build_naked_itm_ticket
+
+    ticket = build_naked_itm_ticket(
+        symbol="ASHOKLEY",
+        spot_price=177.10,
+        bias="BULLISH",
+        target_spot=182.50,
+        sl_spot=174.50,
+        lot_size=5000,
+        live_option_ltp=8.50,
+    )
+
+    assert ticket["option_entry_limit"] == 8.50
+    assert ticket["option_target_exit"] == round(8.50 + (0.65 * 5.40), 2)
+    assert ticket["option_sl_exit"] == round(8.50 - (0.65 * 2.60), 2)
+    assert ticket["max_profit_inr"] == round((12.01 - 8.50) * 5000, 2)
+    assert ticket["max_loss_inr"] == round((8.50 - 6.81) * 5000, 2)
+
+    ticket_bs = build_naked_itm_ticket(
+        symbol="RELIANCE",
+        spot_price=2500.0,
+        bias="BULLISH",
+        target_spot=2575.0,
+        sl_spot=2462.5,
+        lot_size=250,
+    )
+
+    p_entry = ticket_bs["option_entry_limit"]
+    assert p_entry >= 5.0
+    assert ticket_bs["option_target_exit"] == round(p_entry + 48.75, 2)
+    assert ticket_bs["option_sl_exit"] == round(p_entry - 24.375, 2)
+
+
 import random
 import pytest
 from src.scanner.universe import FULL_FNO_UNIVERSE

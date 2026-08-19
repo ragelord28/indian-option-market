@@ -162,6 +162,19 @@ def run_morning_radar(
 
     raw_items.sort(key=lambda x: x.get("conviction_score", 80.0), reverse=True)
 
+    existing_triggers: Dict[str, str] = {}
+    if out_p.exists() and out_p.stat().st_size > 0:
+        try:
+            with open(out_p, "r", encoding="utf-8") as f:
+                prev_data = json.load(f)
+                prev_items = prev_data.get("radar_items", prev_data.get("items", prev_data)) if isinstance(prev_data, dict) else prev_data
+                if isinstance(prev_items, list):
+                    for it in prev_items:
+                        if isinstance(it, dict) and it.get("symbol") and it.get("triggered_at"):
+                            existing_triggers[it["symbol"]] = it["triggered_at"]
+        except Exception:
+            pass
+
     sector_counts: Dict[str, int] = {}
     radar_items: List[Dict[str, Any]] = []
 
@@ -270,12 +283,17 @@ def run_morning_radar(
 
                     if is_triggered or item.get("simulated_triggered", False):
                         status = "TRIGGERED"
-                        try:
-                            import pytz
-                            now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
-                        except Exception:
-                            now_ist = datetime.now()
-                        triggered_at = item.get("triggered_at", now_ist.strftime("%H:%M IST"))
+                        if sym in existing_triggers and existing_triggers[sym]:
+                            triggered_at = existing_triggers[sym]
+                        elif item.get("triggered_at"):
+                            triggered_at = item["triggered_at"]
+                        else:
+                            try:
+                                import pytz
+                                now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
+                            except Exception:
+                                now_ist = datetime.now()
+                            triggered_at = now_ist.strftime("%H:%M IST")
 
         # Attach Strategy Execution Ticket
         ivr_val = float(item.get("ivr", 45.0))

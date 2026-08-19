@@ -456,10 +456,11 @@ def build_naked_itm_ticket(
     sl_spot: Optional[float] = None,
     iv: float = 0.20,
     lot_size: Optional[int] = None,
+    live_option_ltp: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
-    Build Actionable ITM Sniper Option Ticket with snapped strike grid, Black-Scholes entry,
-    and Target/SL option exit limit prices.
+    Build Actionable ITM Sniper Option Ticket with snapped strike grid, Black-Scholes entry / live LTP,
+    and Delta-anchored Target/SL option exit limit prices.
     """
     if lot_size is None or lot_size <= 0:
         lot_size = get_lot_size(symbol)
@@ -479,9 +480,18 @@ def build_naked_itm_ticket(
     flag = "c" if is_bullish else "p"
     sigma = max(iv / 100.0 if iv > 1.5 else iv, 0.01)
 
-    P_entry = calculate_option_price(flag=flag, S=spot_price, K=strike, days_to_expiry=dte, r=0.065, sigma=sigma)
-    P_target = calculate_option_price(flag=flag, S=target_spot, K=strike, days_to_expiry=dte, r=0.065, sigma=sigma)
-    P_sl = calculate_option_price(flag=flag, S=sl_spot, K=strike, days_to_expiry=dte, r=0.065, sigma=sigma)
+    if live_option_ltp and float(live_option_ltp) > 0:
+        P_entry = round(float(live_option_ltp), 2)
+    else:
+        bs_price = calculate_option_price(flag=flag, S=spot_price, K=strike, days_to_expiry=dte, r=0.065, sigma=sigma)
+        P_entry = max(5.0, round(bs_price, 2))
+
+    dist_target = abs(target_spot - spot_price)
+    dist_sl = abs(sl_spot - spot_price)
+    delta_mag = 0.65
+
+    P_target = round(P_entry + (delta_mag * dist_target), 2)
+    P_sl = max(1.0, round(P_entry - (delta_mag * dist_sl), 2))
 
     exp_dt = get_monthly_expiry_date()
     expiry_str = exp_dt.strftime("%d%b%y").upper()
@@ -498,9 +508,9 @@ def build_naked_itm_ticket(
         "spot_price": spot_price,
         "target_spot": target_spot,
         "sl_spot": sl_spot,
-        "option_entry_limit": round(P_entry, 2),
-        "option_target_exit": round(P_target, 2),
-        "option_sl_exit": round(P_sl, 2),
+        "option_entry_limit": P_entry,
+        "option_target_exit": P_target,
+        "option_sl_exit": P_sl,
         "max_profit_inr": round(max_profit, 2),
         "max_loss_inr": round(max_loss, 2),
         "lot_size": lot_size,

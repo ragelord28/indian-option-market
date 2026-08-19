@@ -435,6 +435,8 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
             spot_price=current_spot,
             bias=bias,
             iv=ivr / 100.0 if ivr > 1.5 else ivr,
+            target_spot=float(selected_item.get("target")) if selected_item and selected_item.get("target") else None,
+            sl_spot=float(selected_item.get("stop_loss")) if selected_item and selected_item.get("stop_loss") else None,
         )
         single_leg = {
             "Option Contract": raw_naked["option_symbol"],
