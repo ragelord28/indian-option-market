@@ -15,6 +15,8 @@ from src.data.option_analytics import (
     find_max_pain,
     rank_strikes,
     get_best_strike,
+    snap_to_strike_grid,
+    get_adjacent_exchange_strikes,
 )
 from src.data.strategy_builder import build_optimal_strategy, build_naked_itm_ticket
 
@@ -31,6 +33,8 @@ __all__ = [
     "find_max_pain",
     "rank_strikes",
     "get_best_strike",
+    "snap_to_strike_grid",
+    "get_adjacent_exchange_strikes",
     "build_optimal_strategy",
     "build_naked_itm_ticket",
 ]

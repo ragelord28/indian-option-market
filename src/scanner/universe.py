@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import urllib.request
+from collections import defaultdict
 from pathlib import Path
 from typing import List, Dict, Set
 
@@ -323,14 +324,15 @@ def sync_universe_from_exchange_master(
 ) -> List[str]:
     """
     Download and parse Upstox NSE Instrument Master GZ CSV, filter OPTSTK instruments,
-    extract valid underlying symbols and exact lot sizes, cache to JSON, and return
-    the sorted list of verified OPTSTK symbols.
+    extract valid underlying symbols, exact lot sizes, and real exchange-traded strikes,
+    cache to JSON files, and return the sorted list of verified OPTSTK symbols.
     """
     c_path = Path(cache_path)
     c_path.parent.mkdir(parents=True, exist_ok=True)
 
     url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz"
     symbols_map: Dict[str, int] = {}
+    exchange_strikes: Dict[str, Set[float]] = defaultdict(set)
 
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -348,11 +350,24 @@ def sync_universe_from_exchange_master(
                 sym = m.group(1)
                 lot = int(row.get("lot_size", 250))
                 symbols_map[sym] = lot
+                try:
+                    strike_val = float(row.get("strike", row.get("strike_price", 0.0)))
+                    if strike_val > 0.0:
+                        exchange_strikes[sym].add(strike_val)
+                except (ValueError, TypeError):
+                    pass
 
         if symbols_map:
             with open(c_path, "w", encoding="utf-8") as f:
                 json.dump(symbols_map, f, indent=2)
             LOT_SIZE_MAP.update(symbols_map)
+
+        if exchange_strikes:
+            strikes_file = Path("data/cache/exchange_strikes.json")
+            strikes_file.parent.mkdir(parents=True, exist_ok=True)
+            formatted_strikes = {k: sorted(list(v)) for k, v in exchange_strikes.items()}
+            with open(strikes_file, "w", encoding="utf-8") as f:
+                json.dump(formatted_strikes, f, indent=2)
     except Exception as err:
         logger.warning(f"Could not fetch Upstox exchange master: {err}")
         if c_path.exists():
@@ -365,6 +380,21 @@ def sync_universe_from_exchange_master(
 
     valid_symbols = set(symbols_map.keys()) if symbols_map else set()
     return sorted(list(valid_symbols))
+
+
+def get_real_exchange_strikes(symbol: str) -> list[float]:
+    """Retrieve the official list of exchange-traded strikes for a symbol directly from master cache."""
+    clean_sym = symbol.replace(".NS", "").replace("^", "").strip().upper()
+    cache_file = Path("data/cache/exchange_strikes.json")
+    if cache_file.exists() and cache_file.stat().st_size > 0:
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if clean_sym in data and data[clean_sym]:
+                    return sorted([float(k) for k in data[clean_sym]])
+        except Exception:
+            pass
+    return []
 
 
 def _get_verified_universe(raw_list: List[str]) -> List[str]:

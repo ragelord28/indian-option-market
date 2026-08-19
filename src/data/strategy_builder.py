@@ -19,6 +19,7 @@ from src.data.option_analytics import (
     get_monthly_expiry_date,
     get_strike_step,
     snap_to_strike_grid,
+    get_adjacent_exchange_strikes,
 )
 from src.scanner.universe import get_lot_size
 
@@ -29,6 +30,7 @@ def _find_closest_strike(
     option_type: str,
     spot_price: float,
     fallback_strike_offset: float = 0.0,
+    symbol: Optional[str] = None,
 ) -> pd.Series:
     """Find row in option chain dataframe closest to target delta or fallback offset."""
     delta_col = "call_delta" if option_type.upper() == "CE" else "put_delta"
@@ -41,7 +43,7 @@ def _find_closest_strike(
             return df.iloc[best_idx]
 
     # Fallback if dataframe is empty or deltas missing
-    target_strike = snap_to_strike_grid(spot_price + fallback_strike_offset)
+    target_strike = snap_to_strike_grid(spot_price + fallback_strike_offset, symbol=symbol)
     if not df.empty and "strike_price" in df.columns:
         diffs = np.abs(df["strike_price"].values - target_strike)
         best_idx = int(np.argmin(diffs))
@@ -96,7 +98,7 @@ def _build_ticket_from_legs(
         r = item["row"]
 
         raw_strike = float(r.get("strike_price", spot_price))
-        strike = snap_to_strike_grid(raw_strike, get_strike_step(spot_price))
+        strike = snap_to_strike_grid(raw_strike, symbol=symbol)
         ltp_key = "call_ltp" if opt_type == "CE" else "put_ltp"
         ask_key = "call_ask" if opt_type == "CE" else "put_ask"
         bid_key = "call_bid" if opt_type == "CE" else "put_bid"
@@ -375,17 +377,17 @@ def build_optimal_strategy(
 
     # 1. Build Naked Payload
     if is_bullish:
-        r_naked = _find_closest_strike(df, 0.65, "CE", spot_price, fallback_strike_offset=-step)
+        r_naked = _find_closest_strike(df, 0.65, "CE", spot_price, fallback_strike_offset=-step, symbol=symbol)
         naked_legs = [{"leg_idx": 1, "action": "BUY", "type": "CE", "row": r_naked}]
         naked_name = "🎯 Naked Long CE (ITM Sniper)"
         naked_rat = f"High Conviction ({conviction_score:.1f} pts) & Low IVR ({ivr:.1f}%). Directional ITM Call Sniper."
     elif is_bearish:
-        r_naked = _find_closest_strike(df, -0.65, "PE", spot_price, fallback_strike_offset=+step)
+        r_naked = _find_closest_strike(df, -0.65, "PE", spot_price, fallback_strike_offset=+step, symbol=symbol)
         naked_legs = [{"leg_idx": 1, "action": "BUY", "type": "PE", "row": r_naked}]
         naked_name = "🎯 Naked Long PE (ITM Sniper)"
         naked_rat = f"High Conviction ({conviction_score:.1f} pts) & Low IVR ({ivr:.1f}%). Directional ITM Put Sniper."
     else:  # Rangebound
-        r_naked = _find_closest_strike(df, 0.50, "CE", spot_price, fallback_strike_offset=0.0)
+        r_naked = _find_closest_strike(df, 0.50, "CE", spot_price, fallback_strike_offset=0.0, symbol=symbol)
         naked_legs = [{"leg_idx": 1, "action": "BUY", "type": "CE", "row": r_naked}]
         naked_name = "🎯 Naked ATM Call"
         naked_rat = "Rangebound / Mean Reversion Neutral Stance."
@@ -395,35 +397,35 @@ def build_optimal_strategy(
     # 2. Build Spread Payload
     if is_bullish:
         if ivr > 60.0 or vrp > 3.0:
-            r1 = _find_closest_strike(df, -0.30, "PE", spot_price, fallback_strike_offset=-step)
-            r2 = _find_closest_strike(df, -0.15, "PE", spot_price, fallback_strike_offset=-step * 2.5)
+            r1 = _find_closest_strike(df, -0.30, "PE", spot_price, fallback_strike_offset=-step, symbol=symbol)
+            r2 = _find_closest_strike(df, -0.15, "PE", spot_price, fallback_strike_offset=-step * 2.5, symbol=symbol)
             spread_legs = [{"leg_idx": 1, "action": "SELL", "type": "PE", "row": r1}, {"leg_idx": 2, "action": "BUY", "type": "PE", "row": r2}]
             spread_name = "🛡️ Bull Put Credit Spread"
             spread_rat = f"Bullish with Elevated IVR ({ivr:.1f}%). Selling premium via Bull Put Credit Spread."
         else:
-            r1 = _find_closest_strike(df, 0.60, "CE", spot_price, fallback_strike_offset=-step)
-            r2 = _find_closest_strike(df, 0.25, "CE", spot_price, fallback_strike_offset=+step * 1.5)
+            r1 = _find_closest_strike(df, 0.60, "CE", spot_price, fallback_strike_offset=-step, symbol=symbol)
+            r2 = _find_closest_strike(df, 0.25, "CE", spot_price, fallback_strike_offset=+step * 1.5, symbol=symbol)
             spread_legs = [{"leg_idx": 1, "action": "BUY", "type": "CE", "row": r1}, {"leg_idx": 2, "action": "SELL", "type": "CE", "row": r2}]
             spread_name = "🛡️ Bull Call Debit Spread"
             spread_rat = f"Bullish with Moderate IVR ({ivr:.1f}%). Defined-risk Bull Call Debit Spread."
     elif is_bearish:
         if ivr > 60.0 or vrp > 3.0:
-            r1 = _find_closest_strike(df, 0.30, "CE", spot_price, fallback_strike_offset=+step)
-            r2 = _find_closest_strike(df, 0.15, "CE", spot_price, fallback_strike_offset=+step * 2.5)
+            r1 = _find_closest_strike(df, 0.30, "CE", spot_price, fallback_strike_offset=+step, symbol=symbol)
+            r2 = _find_closest_strike(df, 0.15, "CE", spot_price, fallback_strike_offset=+step * 2.5, symbol=symbol)
             spread_legs = [{"leg_idx": 1, "action": "SELL", "type": "CE", "row": r1}, {"leg_idx": 2, "action": "BUY", "type": "CE", "row": r2}]
             spread_name = "🛡️ Bear Call Credit Spread"
             spread_rat = f"Bearish with Elevated IVR ({ivr:.1f}%). Selling premium via Bear Call Credit Spread."
         else:
-            r1 = _find_closest_strike(df, -0.60, "PE", spot_price, fallback_strike_offset=+step)
-            r2 = _find_closest_strike(df, -0.25, "PE", spot_price, fallback_strike_offset=-step * 1.5)
+            r1 = _find_closest_strike(df, -0.60, "PE", spot_price, fallback_strike_offset=+step, symbol=symbol)
+            r2 = _find_closest_strike(df, -0.25, "PE", spot_price, fallback_strike_offset=-step * 1.5, symbol=symbol)
             spread_legs = [{"leg_idx": 1, "action": "BUY", "type": "PE", "row": r1}, {"leg_idx": 2, "action": "SELL", "type": "PE", "row": r2}]
             spread_name = "🛡️ Bear Put Debit Spread"
             spread_rat = f"Bearish with Moderate IVR ({ivr:.1f}%). Defined-risk Bear Put Debit Spread."
     else:  # Iron Condor
-        rc_sell = _find_closest_strike(df, 0.20, "CE", spot_price, fallback_strike_offset=+step * 1.5)
-        rc_buy = _find_closest_strike(df, 0.10, "CE", spot_price, fallback_strike_offset=+step * 3.0)
-        rp_sell = _find_closest_strike(df, -0.20, "PE", spot_price, fallback_strike_offset=-step * 1.5)
-        rp_buy = _find_closest_strike(df, -0.10, "PE", spot_price, fallback_strike_offset=-step * 3.0)
+        rc_sell = _find_closest_strike(df, 0.20, "CE", spot_price, fallback_strike_offset=+step * 1.5, symbol=symbol)
+        rc_buy = _find_closest_strike(df, 0.10, "CE", spot_price, fallback_strike_offset=+step * 3.0, symbol=symbol)
+        rp_sell = _find_closest_strike(df, -0.20, "PE", spot_price, fallback_strike_offset=-step * 1.5, symbol=symbol)
+        rp_buy = _find_closest_strike(df, -0.10, "PE", spot_price, fallback_strike_offset=-step * 3.0, symbol=symbol)
         spread_legs = [
             {"leg_idx": 1, "action": "SELL", "type": "CE", "row": rc_sell},
             {"leg_idx": 2, "action": "BUY", "type": "CE", "row": rc_buy},
@@ -462,12 +464,11 @@ def build_naked_itm_ticket(
     if lot_size is None or lot_size <= 0:
         lot_size = get_lot_size(symbol)
 
-    step = get_strike_step(spot_price)
     is_bullish = "BULLISH" in bias.upper()
     option_type = "CE" if is_bullish else "PE"
 
-    raw_strike = spot_price - step if is_bullish else spot_price + step
-    strike = snap_to_strike_grid(raw_strike, step)
+    itm_call_strike, atm_strike, itm_put_strike = get_adjacent_exchange_strikes(symbol, spot_price, steps=1)
+    strike = itm_call_strike if is_bullish else itm_put_strike
 
     if target_spot is None:
         target_spot = round(spot_price * (1.03 if is_bullish else 0.97), 2)

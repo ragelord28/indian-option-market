@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from src.backtester.synthetic_options import calculate_option_price
+from src.scanner.universe import get_real_exchange_strikes
 
 NSE_HOLIDAYS_2026 = {
     date(2026, 1, 26), date(2026, 3, 6), date(2026, 4, 3),
@@ -87,11 +88,40 @@ def get_strike_step(spot: float) -> float:
         return 100.0 # e.g. HAL, PAGEIND, MARUTI
 
 
-def snap_to_strike_grid(spot: float, strike_step: float | None = None) -> float:
-    """Snaps any continuous floating price to the nearest valid exchange strike."""
+def snap_to_strike_grid(spot: float, strike_step: float | None = None, symbol: str | None = None) -> float:
+    """
+    Snaps price to the nearest real exchange-traded strike from the official contract master
+    when spot is within master range, otherwise falls back to step grid.
+    """
+    if symbol:
+        valid_strikes = get_real_exchange_strikes(symbol)
+        if valid_strikes and valid_strikes[0] <= spot <= valid_strikes[-1]:
+            return min(valid_strikes, key=lambda k: abs(k - spot))
+    # Fallback if symbol is unspecified or spot out of range
     if strike_step is None:
         strike_step = get_strike_step(spot)
     return round(round(spot / strike_step) * strike_step, 2)
+
+
+def get_adjacent_exchange_strikes(symbol: str, spot: float, steps: int = 1) -> tuple[float, float, float]:
+    """
+    Returns (itm_call_or_otm_put, atm_strike, itm_put_or_otm_call)
+    by indexing directly into the official NSE exchange strike array.
+    """
+    valid_strikes = get_real_exchange_strikes(symbol)
+    if not valid_strikes or not (valid_strikes[0] <= spot <= valid_strikes[-1]):
+        atm = snap_to_strike_grid(spot, symbol=symbol)
+        step = get_strike_step(spot)
+        return atm - step, atm, atm + step
+
+    # Find closest ATM strike index
+    atm_idx = min(range(len(valid_strikes)), key=lambda i: abs(valid_strikes[i] - spot))
+    atm_strike = valid_strikes[atm_idx]
+
+    lower_idx = max(0, atm_idx - steps)
+    higher_idx = min(len(valid_strikes) - 1, atm_idx + steps)
+
+    return valid_strikes[lower_idx], atm_strike, valid_strikes[higher_idx]
 
 
 def calculate_pcr(option_chain_df: pd.DataFrame) -> float:
