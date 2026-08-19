@@ -28,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data import (
     UpstoxProvider,
+    check_upstox_live_status,
     calculate_pcr,
     interpret_pcr,
     calculate_vrp,
@@ -144,24 +145,18 @@ if "code" in st.query_params:
     except Exception as e:
         st.sidebar.error(f"Upstox Auth Failed: {e}")
 
-upstox_token_file = Path("data/tokens/upstox_token.json")
-upstox_alt_file = Path("data/upstox_token.json")
-has_active_token = bool(
-    os.getenv("UPSTOX_ACCESS_TOKEN")
-    or (upstox_token_file.exists() and upstox_token_file.stat().st_size > 0)
-    or (upstox_alt_file.exists() and upstox_alt_file.stat().st_size > 0)
-)
-
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔌 Upstox Broker Integration")
 
-if has_active_token:
-    st.sidebar.success("🟢 Upstox Live Connected")
-    login_url = get_login_url()
+is_upstox_live, status_msg = check_upstox_live_status()
+login_url = get_login_url()
+
+if is_upstox_live:
+    st.sidebar.success(status_msg)
     st.sidebar.markdown(f"[🔄 Re-authenticate Upstox]({login_url})", unsafe_allow_html=True)
 else:
-    login_url = get_login_url()
-    st.sidebar.warning("🔴 Upstox Token Offline / Unlinked")
+    st.sidebar.error(status_msg)
+    st.sidebar.caption("⚠️ Market quotes & ORB scans are actively running on the real-time fail-safe feed.")
     st.sidebar.markdown(
         f"""<a href="{login_url}" target="_self">
             <button style="width:100%; background-color:#2563EB; color:white; border:none; padding:0.5rem 1rem; border-radius:6px; font-weight:700; cursor:pointer;">

@@ -139,3 +139,27 @@ def test_upstox_provider_fetch_option_chain_mocked(mock_get, tmp_path):
     assert "strike_price" in chain_df.columns
     assert chain_df["strike_price"].iloc[0] == 2500.0
     assert chain_df["call_delta"].iloc[0] == 0.52
+
+
+@patch("src.data.upstox_provider.requests.get")
+def test_is_token_valid_and_live_status(mock_get, tmp_path):
+    """Test is_token_valid and check_upstox_live_status helper."""
+    from src.data.upstox_provider import check_upstox_live_status
+
+    # Test 1: Active valid token
+    mock_res = MagicMock()
+    mock_res.status_code = 200
+    mock_get.return_value = mock_res
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("UPSTOX_ACCESS_TOKEN=valid_mock_token_123\n")
+
+    provider = UpstoxProvider(cache_dir=tmp_path, env_path=str(env_file))
+    assert provider.is_token_valid() is True
+
+    # Test 2: Invalid/Expired token (401)
+    mock_res_401 = MagicMock()
+    mock_res_401.status_code = 401
+    mock_get.return_value = mock_res_401
+
+    assert provider.is_token_valid() is False

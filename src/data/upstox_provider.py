@@ -83,7 +83,43 @@ class UpstoxProvider(BaseDataProvider):
         self.cache_dir = Path(cache_dir)
         load_dotenv(dotenv_path=env_path, override=True)
         self.access_token = os.getenv("UPSTOX_ACCESS_TOKEN", "").strip()
+        if not self.access_token and env_path == ".env":
+            for tf in [Path("data/tokens/upstox_token.json"), Path("data/upstox_token.json")]:
+                if tf.exists() and tf.stat().st_size > 0:
+                    try:
+                        import json
+                        with open(tf, "r", encoding="utf-8") as f:
+                            tdata = json.load(f)
+                            tok = tdata.get("access_token", "").strip()
+                            if tok:
+                                self.access_token = tok
+                                break
+                    except Exception:
+                        pass
         self.api_key = os.getenv("UPSTOX_API_KEY", "").strip()
+
+    def is_token_valid(self) -> bool:
+        """
+        Dynamically verify if Upstox access token exists and is active/valid with live API.
+        Returns True if token is authenticated and responsive, False otherwise.
+        """
+        if not self.access_token:
+            return False
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json",
+        }
+        url = f"{UPSTOX_BASE_URL}/user/profile"
+        try:
+            res = requests.get(url, headers=headers, timeout=3)
+            if res.status_code == 200:
+                return True
+            quote_url = f"{UPSTOX_BASE_URL}/market-quote/quotes?instrument_key=NSE_EQ|INE002A01018"
+            qres = requests.get(quote_url, headers=headers, timeout=3)
+            return qres.status_code == 200
+        except Exception:
+            return False
 
     def _get_instrument_key(self, symbol: str) -> str:
         """
@@ -442,3 +478,14 @@ def fetch_live_quotes_batch(symbols: list[str], provider: UpstoxProvider = None)
     if provider is None:
         provider = UpstoxProvider()
     return provider.fetch_live_quotes_batch(symbols)
+
+
+def check_upstox_live_status() -> tuple[bool, str]:
+    """Return (is_connected: bool, status_message: str)."""
+    try:
+        provider = UpstoxProvider()
+        if provider.is_token_valid():
+            return True, "🟢 Upstox Live Connected"
+    except Exception:
+        pass
+    return False, "🔴 Upstox Disconnected (Using Fallback Feed)"
