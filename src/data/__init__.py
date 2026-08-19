@@ -16,7 +16,7 @@ from src.data.option_analytics import (
     rank_strikes,
     get_best_strike,
 )
-from src.data.strategy_builder import build_optimal_strategy
+from src.data.strategy_builder import build_optimal_strategy, build_naked_itm_ticket
 
 __all__ = [
     "BaseDataProvider",
@@ -31,4 +31,5 @@ __all__ = [
     "rank_strikes",
     "get_best_strike",
     "build_optimal_strategy",
+    "build_naked_itm_ticket",
 ]
