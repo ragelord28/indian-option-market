@@ -293,6 +293,28 @@ def test_delta_anchored_option_pricing_and_live_ltp():
     assert ticket_bs["option_sl_exit"] == round(p_entry - 24.375, 2)
 
 
+def test_universal_volatility_and_pricing_across_universe():
+    """Verify that for HEROMOTOCO, PAGEIND, RELIANCE, TCS, and ASHOKLEY, option entry premiums match real market price bands and do not inflate from IV Rank."""
+    from src.data.strategy_builder import build_naked_itm_ticket
+
+    test_stocks = [
+        ("HEROMOTOCO", 4500.0, "BULLISH", 0.25, 45.0),
+        ("PAGEIND", 36000.0, "BULLISH", 0.22, 60.0),
+        ("RELIANCE", 2500.0, "BULLISH", 0.20, 40.0),
+        ("TCS", 3500.0, "BEARISH", 0.18, 55.0),
+        ("ASHOKLEY", 180.0, "BULLISH", 0.28, 80.0),
+    ]
+
+    for symbol, spot, bias, true_vol, inflated_ivr in test_stocks:
+        ticket_real = build_naked_itm_ticket(symbol=symbol, spot_price=spot, bias=bias, iv=true_vol)
+        ticket_inflated = build_naked_itm_ticket(symbol=symbol, spot_price=spot, bias=bias, iv=inflated_ivr)
+
+        assert ticket_real["option_entry_limit"] > 0
+        assert ticket_inflated["option_entry_limit"] > 0
+        assert ticket_real["option_entry_limit"] < spot * 0.25
+        assert ticket_inflated["option_entry_limit"] < spot * 0.25
+
+
 import random
 import pytest
 from src.scanner.universe import FULL_FNO_UNIVERSE

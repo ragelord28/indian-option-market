@@ -489,3 +489,31 @@ def check_upstox_live_status() -> tuple[bool, str]:
     except Exception:
         pass
     return False, "🔴 Upstox Disconnected (Using Fallback Feed)"
+
+
+def fetch_live_option_ltp(symbol: str, strike: float, option_type: str, provider: UpstoxProvider = None) -> float | None:
+    """
+    Query live option contract LTP from Upstox API v2 option chain or quote endpoint.
+    If Upstox is offline or token expired, returns None (enabling calibrated Black-Scholes engine with true volatility).
+    """
+    if provider is None:
+        provider = UpstoxProvider()
+
+    if not provider.is_token_valid():
+        return None
+
+    clean_symbol = symbol.replace(".NS", "").replace("^", "").strip().upper()
+    opt_type = option_type.strip().upper()
+
+    try:
+        df_chain = provider.fetch_option_chain(clean_symbol)
+        if df_chain is not None and not df_chain.empty and "strike_price" in df_chain.columns:
+            closest_row = df_chain.iloc[(df_chain["strike_price"] - strike).abs().argmin()]
+            col_name = "call_ltp" if opt_type == "CE" else "put_ltp"
+            ltp = float(closest_row.get(col_name, 0.0))
+            if ltp > 0.0:
+                return round(ltp, 2)
+    except Exception:
+        pass
+
+    return None

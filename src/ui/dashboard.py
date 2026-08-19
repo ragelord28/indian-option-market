@@ -66,12 +66,27 @@ def is_market_session_active() -> bool:
 
 def load_watchlist_data() -> dict:
     """
-    Load real D-1 watchlist and radar data from data/watchlists/watchlist_latest.json
-    and data/radar/radar_latest.json.
-
-    If data/watchlists/watchlist_latest.json does not exist or is empty,
-    automatically invokes run_eod_scanner() to generate real data dynamically.
+    Load real D-1 watchlist and radar data with automated startup lifecycle hook.
     """
+    if "app_bootstrapped" not in st.session_state:
+        wl_path = Path("data/watchlists/watchlist_latest.json")
+        if not wl_path.exists() or wl_path.stat().st_size == 0:
+            run_eod_scanner()
+
+        try:
+            import pytz
+            now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
+        except Exception:
+            now_ist = datetime.now()
+
+        time_str = now_ist.strftime("%H:%M")
+        is_live_hours = ("09:30" <= time_str <= "15:30") or is_market_session_active()
+
+        if is_live_hours:
+            run_morning_radar()
+
+        st.session_state.app_bootstrapped = True
+
     wl_path = Path("data/watchlists/watchlist_latest.json")
     if not wl_path.exists() or wl_path.stat().st_size == 0:
         run_eod_scanner()
@@ -429,12 +444,14 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
             index=default_mode_idx,
         )
 
+    stock_vol = float(selected_item.get("hv20", selected_item.get("hv_20", 22.0))) / 100.0 if selected_item else 0.22
+
     if exec_mode.startswith("🎯 Naked"):
         raw_naked = build_naked_itm_ticket(
             symbol=selected_symbol,
             spot_price=current_spot,
             bias=bias,
-            iv=ivr / 100.0 if ivr > 1.5 else ivr,
+            iv=stock_vol,
             target_spot=float(selected_item.get("target")) if selected_item and selected_item.get("target") else None,
             sl_spot=float(selected_item.get("stop_loss")) if selected_item and selected_item.get("stop_loss") else None,
         )

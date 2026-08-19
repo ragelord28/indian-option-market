@@ -478,11 +478,25 @@ def build_naked_itm_ticket(
 
     dte = float(get_days_to_monthly_expiry())
     flag = "c" if is_bullish else "p"
-    sigma = max(iv / 100.0 if iv > 1.5 else iv, 0.01)
 
+    # Real Volatility Rule: ensure sigma is derived from actual stock historical volatility
+    sigma_val = float(iv if 0.05 <= iv <= 1.0 else (iv / 100.0 if iv > 1.0 else 0.22))
+    sigma = min(max(sigma_val, 0.05), 1.0)
+
+    # Entry Premium Resolution
+    P_entry = None
     if live_option_ltp and float(live_option_ltp) > 0:
         P_entry = round(float(live_option_ltp), 2)
     else:
+        try:
+            from src.data.upstox_provider import fetch_live_option_ltp
+            live_ltp_fetched = fetch_live_option_ltp(symbol, strike, option_type)
+            if live_ltp_fetched and float(live_ltp_fetched) > 0:
+                P_entry = round(float(live_ltp_fetched), 2)
+        except Exception:
+            pass
+
+    if P_entry is None or P_entry <= 0:
         bs_price = calculate_option_price(flag=flag, S=spot_price, K=strike, days_to_expiry=dte, r=0.065, sigma=sigma)
         P_entry = max(5.0, round(bs_price, 2))
 
