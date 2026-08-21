@@ -658,7 +658,7 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
 
     # Capital Summary Calculation
     total_capital = 1000000.0
-    blocked_margin = sum(t["margin_blocked"] for t in active_trades)
+    blocked_margin = sum(float(t.get("margin_blocked", 0.0)) for t in active_trades if isinstance(t, dict))
     free_cash = total_capital - blocked_margin
     used_slots = len(active_trades)
 
@@ -722,20 +722,26 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
             st.info("No active positions currently open.")
         else:
             for idx, pos in enumerate(active_trades):
-                units = pos["quantity_lots"] * pos["lot_size"]
+                if not isinstance(pos, dict):
+                    continue
+                trd_id = pos.get("trade_id", f"TRD-{1001+idx}")
+                sym_str = pos.get("symbol", "UNKNOWN")
+                qty_lots = int(pos.get("quantity_lots", 1))
+                lot_sz = int(pos.get("lot_size", 250))
+                units = qty_lots * lot_sz
                 entry_p = float(pos.get("entry_premium", 0.0))
                 exit_p = float(pos.get("current_ltp", entry_p))
                 is_short = "BEAR" in pos.get("direction", "").upper() or "PUT" in pos.get("strategy", "").upper()
                 realized_pnl = round((entry_p - exit_p) * units if is_short else (exit_p - entry_p) * units, 2)
                 pnl_color = "#10B981" if realized_pnl >= 0 else "#EF4444"
 
-                with st.expander(f"📌 {pos['trade_id']} — {pos['symbol']} ({pos.get('strategy', 'ITM Sniper')})", expanded=True):
+                with st.expander(f"📌 {trd_id} — {sym_str} ({pos.get('strategy', 'ITM Sniper')})", expanded=True):
                     c1, c2, c3 = st.columns([3, 2, 2])
                     with c1:
-                        opt_contract_str = pos.get("option_symbol", f"{pos['symbol']} OPT")
+                        opt_contract_str = pos.get("option_symbol", f"{sym_str} OPT")
                         st.write(f"**Contract:** {opt_contract_str}")
                         st.write(f"**Entry Premium:** ₹{entry_p:.2f} | **LTP:** ₹{exit_p:.2f}")
-                        st.caption(f"Entry Date: {pos.get('entry_date', 'N/A')} | Lots: {pos['quantity_lots']} (Size: {pos['lot_size']})")
+                        st.caption(f"Entry Date: {pos.get('entry_date', 'N/A')} | Lots: {qty_lots} (Size: {lot_sz})")
                     with c2:
                         st.markdown(f"**Unrealized P&L:** <span style='color:{pnl_color}; font-weight:bold;'>₹{realized_pnl:+,.2f}</span>", unsafe_allow_html=True)
                         st.write(f"**SL:** ₹{float(pos.get('stop_loss', 0.0)):.2f} | **Tgt:** ₹{float(pos.get('target', 0.0)):.2f}")
