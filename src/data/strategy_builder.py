@@ -222,23 +222,25 @@ def _build_ticket_from_legs(
     max_strike = max(strikes_list)
     spread_width = abs(max_strike - min_strike) if len(strikes_list) > 1 else 50.0
 
-    if "Naked" in strat_name:
+    clean_name = strat_name.replace("🛡️", "").replace("🎯", "").strip()
+
+    if "Naked" in clean_name:
         max_loss = net_cost_abs
         max_profit = net_cost_abs * 2.5
         basket_margin = net_cost_abs
-        breakeven = min_strike + (net_cost_abs / lot_size) if "CE" in strat_name else max_strike - (net_cost_abs / lot_size)
+        breakeven = min_strike + (net_cost_abs / lot_size) if "CE" in clean_name else max_strike - (net_cost_abs / lot_size)
 
-    elif strat_name in ("Bull Call Debit Spread", "Bear Put Debit Spread"):
+    elif clean_name in ("Bull Call Debit Spread", "Bear Put Debit Spread"):
         max_loss = net_cost_abs
         max_profit = max((spread_width * lot_size) - net_cost_abs, 1.0)
         basket_margin = net_cost_abs
-        breakeven = min_strike + (net_cost_abs / lot_size) if strat_name == "Bull Call Debit Spread" else max_strike - (net_cost_abs / lot_size)
+        breakeven = min_strike + (net_cost_abs / lot_size) if clean_name == "Bull Call Debit Spread" else max_strike - (net_cost_abs / lot_size)
 
-    elif strat_name in ("Bull Put Credit Spread", "Bear Call Credit Spread"):
+    elif clean_name in ("Bull Put Credit Spread", "Bear Call Credit Spread"):
         max_profit = net_cost_abs
         max_loss = max((spread_width * lot_size) - net_cost_abs, 1.0)
         basket_margin = spread_width * lot_size
-        breakeven = max_strike - (net_cost_abs / lot_size) if strat_name == "Bull Put Credit Spread" else min_strike + (net_cost_abs / lot_size)
+        breakeven = max_strike - (net_cost_abs / lot_size) if clean_name == "Bull Put Credit Spread" else min_strike + (net_cost_abs / lot_size)
 
     else:  # Iron Condor
         max_profit = net_cost_abs

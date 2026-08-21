@@ -3,7 +3,6 @@ yfinance
 pyarrow
 pytest
 python-dotenv
-py_vollib
 scipy
 requests
 streamlit
