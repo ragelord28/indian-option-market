@@ -687,3 +687,139 @@ def test_parameterized_eod_square_off_time_window(tmp_path, eval_time, is_eod_ex
         eod_alerts = [a for a in alerts if a["action_type"] == "EOD_EXIT"]
         assert len(eod_alerts) == 0
 
+
+def test_dynamic_tick_by_tick_trailing_stop_calculation(tmp_path):
+    """Test dynamic tick-by-tick trailing stop adjustment and atomic JSON persistence."""
+    pos_file = tmp_path / "active_positions.json"
+
+    positions = [
+        {
+            "trade_id": "TRD-DYN-BULL",
+            "symbol": "RELIANCE",
+            "strategy": "Bull Call Spread",
+            "direction": "BULLISH",
+            "entry_premium": 50.0,
+            "entry_spot": 2500.0,
+            "target_spot": 2650.0,
+            "sl_spot": 2450.0,
+            "current_spot": 2500.0,
+            "current_ltp": 50.0,
+            "status": "OPEN",
+            "quantity_lots": 1,
+            "lot_size": 250,
+            "atr": 37.5,
+            "trailing_sl_active": True,
+        },
+        {
+            "trade_id": "TRD-DYN-BEAR",
+            "symbol": "TCS",
+            "strategy": "Bear Put Spread",
+            "direction": "BEARISH",
+            "entry_premium": 40.0,
+            "entry_spot": 4200.0,
+            "target_spot": 4050.0,
+            "sl_spot": 4300.0,
+            "current_spot": 4200.0,
+            "current_ltp": 40.0,
+            "status": "OPEN",
+            "quantity_lots": 1,
+            "lot_size": 175,
+            "atr": 63.0,
+            "trailing_sl_active": True,
+        },
+    ]
+
+    with open(pos_file, "w", encoding="utf-8") as f:
+        json.dump(positions, f, indent=2)
+
+    # Tick 1: RELIANCE spot goes to 2550 (new_sl = max(2450, round(2550 - 37.5)) = 2512.5)
+    # TCS spot drops to 4130 (new_sl = min(4300, round(4130 + 63)) = 4193.0)
+    mock_quotes_1 = {
+        "RELIANCE": {"ltp": 2550.0, "volume": 1000.0},
+        "TCS": {"ltp": 4130.0, "volume": 500.0},
+    }
+
+    test_time = datetime(2026, 8, 17, 11, 0)
+    monitor_active_trades(active_file=pos_file, quotes_override=mock_quotes_1, now_dt_override=test_time)
+
+    with open(pos_file, "r", encoding="utf-8") as f:
+        saved_1 = json.load(f)
+
+    pos_map_1 = {p["trade_id"]: p for p in saved_1}
+    assert pos_map_1["TRD-DYN-BULL"]["sl_spot"] == 2512.5
+    assert pos_map_1["TRD-DYN-BEAR"]["sl_spot"] == 4193.0
+
+    # Tick 2: RELIANCE spot moves to 2580 (new_sl = max(2512.5, round(2580 - 37.5)) = 2542.5)
+    # TCS spot drops to 4080 (new_sl = min(4193, round(4080 + 63)) = 4143.0)
+    mock_quotes_2 = {
+        "RELIANCE": {"ltp": 2580.0, "volume": 1200.0},
+        "TCS": {"ltp": 4080.0, "volume": 600.0},
+    }
+    monitor_active_trades(active_file=pos_file, quotes_override=mock_quotes_2, now_dt_override=test_time)
+
+    with open(pos_file, "r", encoding="utf-8") as f:
+        saved_2 = json.load(f)
+
+    pos_map_2 = {p["trade_id"]: p for p in saved_2}
+    assert pos_map_2["TRD-DYN-BULL"]["sl_spot"] == 2542.5
+    assert pos_map_2["TRD-DYN-BEAR"]["sl_spot"] == 4143.0
+
+    # Tick 3: RELIANCE spot pulls back to 2560 (new_sl = max(2542.5, 2522.5) = 2542.5 -- sl_spot must NOT move down!)
+    mock_quotes_3 = {
+        "RELIANCE": {"ltp": 2560.0, "volume": 1200.0},
+        "TCS": {"ltp": 4080.0, "volume": 600.0},
+    }
+    monitor_active_trades(active_file=pos_file, quotes_override=mock_quotes_3, now_dt_override=test_time)
+
+    with open(pos_file, "r", encoding="utf-8") as f:
+        saved_3 = json.load(f)
+
+    pos_map_3 = {p["trade_id"]: p for p in saved_3}
+    assert pos_map_3["TRD-DYN-BULL"]["sl_spot"] == 2542.5
+
+
+def test_gap_slippage_calculation_on_sl_hit(tmp_path):
+    """Test gap slippage calculation (slippage_inr = abs(current_spot - sl_spot) * units) on SL breach."""
+    pos_file = tmp_path / "active_positions.json"
+
+    positions = [
+        {
+            "trade_id": "TRD-SL-SLIPPAGE",
+            "symbol": "INFY",
+            "strategy": "Naked Long CE",
+            "direction": "BULLISH",
+            "entry_premium": 50.0,
+            "entry_spot": 1500.0,
+            "target_spot": 1550.0,
+            "sl_spot": 1470.0,
+            "current_spot": 1500.0,
+            "current_ltp": 50.0,
+            "status": "OPEN",
+            "quantity_lots": 2,
+            "lot_size": 400,  # units = 2 * 400 = 800
+            "trailing_sl_active": False,
+        }
+    ]
+
+    with open(pos_file, "w", encoding="utf-8") as f:
+        json.dump(positions, f, indent=2)
+
+    # Spot gaps down to 1450.0 (SL is 1470.0 -> Gap slippage = abs(1450 - 1470) * 800 = 20 * 800 = 16000 INR)
+    mock_quotes = {
+        "INFY": {"ltp": 1450.0, "volume": 2000.0},
+    }
+
+    test_time = datetime(2026, 8, 17, 10, 0)
+    alerts = monitor_active_trades(active_file=pos_file, quotes_override=mock_quotes, now_dt_override=test_time)
+
+    assert len(alerts) == 1
+    assert alerts[0]["action_type"] == "SL_HIT"
+    assert alerts[0]["slippage_inr"] == 16000.0
+    assert "Gap slippage: ₹16,000.00" in alerts[0]["action_alert"]
+
+    with open(pos_file, "r", encoding="utf-8") as f:
+        saved_positions = json.load(f)
+
+    assert saved_positions[0]["slippage_inr"] == 16000.0
+
+
