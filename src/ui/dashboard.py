@@ -67,21 +67,34 @@ def is_market_session_active() -> bool:
 def load_watchlist_data() -> dict:
     """
     Load real D-1 watchlist and radar data with automated startup lifecycle hook.
+    Automatically triggers D-1 nightly scanner post 16:00 IST and Morning Radar during live session.
     """
     if "app_bootstrapped" not in st.session_state:
         wl_path = Path("data/watchlists/watchlist_latest.json")
-        if not wl_path.exists() or wl_path.stat().st_size == 0:
-            run_eod_scanner()
-
         try:
             import pytz
             now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
         except Exception:
             now_ist = datetime.now()
 
+        today_str = now_ist.strftime("%Y-%m-%d")
         time_str = now_ist.strftime("%H:%M")
-        is_live_hours = ("09:30" <= time_str <= "15:30") or is_market_session_active()
 
+        # 1. Post 16:00 PM: Check if watchlist_latest.json was generated today post-16:00
+        is_post_1600 = time_str >= "16:00"
+        should_run_eod = not wl_path.exists() or wl_path.stat().st_size == 0
+        if is_post_1600 and wl_path.exists() and wl_path.stat().st_size > 0:
+            mtime = datetime.fromtimestamp(wl_path.stat().st_mtime)
+            mtime_str = mtime.strftime("%Y-%m-%d")
+            mtime_time = mtime.strftime("%H:%M")
+            if mtime_str != today_str or mtime_time < "16:00":
+                should_run_eod = True
+
+        if should_run_eod:
+            run_eod_scanner()
+
+        # 2. Live Market Session (09:30 AM to 15:30 PM): Auto-run run_morning_radar()
+        is_live_hours = ("09:30" <= time_str <= "15:30") or is_market_session_active()
         if is_live_hours:
             run_morning_radar()
 
@@ -106,14 +119,6 @@ def load_watchlist_data() -> dict:
             radar_data = json.load(f)
 
     radar_items = radar_data.get("radar_items", [])
-
-    # If outside market session, ensure all real candidates display clean pre-market state
-    if not is_market_session_active():
-        for r in radar_items:
-            r["status"] = "AWAITING_ORB"
-            r["agent15_status"] = "🟡 AWAITING ORB (Pre-Market)"
-            r["trigger_time"] = "Pending (09:15-09:30)"
-            r["simulated_triggered"] = False
 
     return {
         "watchlist_data": wl_data,
@@ -213,8 +218,15 @@ if auto_refresh:
     st.markdown('<meta http-equiv="refresh" content="300">', unsafe_allow_html=True)
     st.sidebar.caption("⏱️ Auto-refresh active: 5m interval")
 
-if st.sidebar.button("🗑️ Reset Session State & Cache"):
+if st.sidebar.button("🧹 Clear All Alerts & Positions"):
+    with open(active_pos_file, "w", encoding="utf-8") as f:
+        json.dump([], f, indent=2)
+    with open(active_trades_file, "w", encoding="utf-8") as f:
+        json.dump([], f, indent=2)
+    st.session_state.active_trades = []
     st.session_state.clear()
+    st.cache_data.clear()
+    st.sidebar.success("All active alerts & positions cleared!")
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -263,22 +275,24 @@ if "active_trades" not in st.session_state:
 active_trades = st.session_state.active_trades
 used_slots = len(active_trades)
 
-# Global Alert Evaluation (runs on every page load across all tabs)
-active_alerts = monitor_active_trades(active_file=active_pos_file)
-if active_alerts:
-    has_chime_played = False
-    for alt in active_alerts:
-        atype = alt.get("action_type", "")
-        amsg = alt.get("action_alert", "")
-        if atype in ("SL_HIT", "EOD_EXIT"):
-            st.error(f"🚨 **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
-        elif atype in ("TARGET_HIT", "TRAILING_SL"):
-            st.success(f"🎉 **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
-        else:
-            st.warning(f"⏰ **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
-        if not has_chime_played:
-            st.markdown('<audio autoplay style="display:none;"><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
-            has_chime_played = True
+# Global Alert Evaluation (runs on every page load across all tabs if genuine open trades exist)
+open_trades = [t for t in active_trades if isinstance(t, dict) and t.get("status") == "OPEN"]
+if open_trades:
+    active_alerts = monitor_active_trades(active_file=active_pos_file)
+    if active_alerts:
+        has_chime_played = False
+        for alt in active_alerts:
+            atype = alt.get("action_type", "")
+            amsg = alt.get("action_alert", "")
+            if atype in ("SL_HIT", "EOD_EXIT"):
+                st.error(f"🚨 **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
+            elif atype in ("TARGET_HIT", "TRAILING_SL"):
+                st.success(f"🎉 **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
+            else:
+                st.warning(f"⏰ **{alt['trade_id']} ({alt['symbol']})**: {amsg}")
+            if not has_chime_played:
+                st.markdown('<audio autoplay style="display:none;"><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg"></audio>', unsafe_allow_html=True)
+                has_chime_played = True
 
 # -----------------------------------------------------------------------------
 # TAB 1: D-1 Command Center
