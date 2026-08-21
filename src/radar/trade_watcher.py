@@ -148,6 +148,20 @@ def monitor_active_trades(
         if direction == "BEARISH":
             spot_pnl_pct = -spot_pnl_pct  # Invert for bearish
 
+        # Determine ATR for dynamic trailing stop loss calculations
+        atr = float(pos.get("atr") or quote.get("atr") or (entry_spot * 0.015))
+        if atr <= 0:
+            atr = entry_spot * 0.015
+
+        # Dynamic trailing stop calculation when trailing_sl_active is True
+        if pos.get("trailing_sl_active", False):
+            if direction == "BULLISH":
+                new_sl = max(sl_spot, round(current_spot - (1.0 * atr), 2))
+            else:
+                new_sl = min(sl_spot, round(current_spot + (1.0 * atr), 2)) if sl_spot > 0 else round(current_spot + (1.0 * atr), 2)
+            sl_spot = new_sl
+            pos["sl_spot"] = sl_spot
+
         alert_msg = None
         action_type = None
 
@@ -158,13 +172,18 @@ def monitor_active_trades(
             alert_msg = "🛑 15:10 SQUARE OFF: Market closing in 20 mins. Exit immediately to avoid broker auto-square-off penalty."
             action_type = "EOD_EXIT"
 
-        # Priority 2: Stop Loss Hit
+        # Priority 2: Stop Loss Hit & Gap Slippage Calculation
         elif sl_spot > 0 and current_spot > 0:
+            sl_breached = False
             if direction == "BULLISH" and current_spot <= sl_spot:
-                alert_msg = f"❌ STOP LOSS HIT: Spot ₹{current_spot:,.2f} breached SL ₹{sl_spot:,.2f}. Exit on broker immediately."
-                action_type = "SL_HIT"
+                sl_breached = True
             elif direction == "BEARISH" and current_spot >= sl_spot:
-                alert_msg = f"❌ STOP LOSS HIT: Spot ₹{current_spot:,.2f} breached SL ₹{sl_spot:,.2f}. Exit on broker immediately."
+                sl_breached = True
+
+            if sl_breached:
+                slippage_inr = round(abs(current_spot - sl_spot) * units, 2)
+                pos["slippage_inr"] = slippage_inr
+                alert_msg = f"❌ STOP LOSS HIT: Spot ₹{current_spot:,.2f} breached SL ₹{sl_spot:,.2f}. Gap slippage: ₹{slippage_inr:,.2f}. Exit on broker immediately."
                 action_type = "SL_HIT"
 
         # Priority 3: Target Reached
@@ -179,13 +198,19 @@ def monitor_active_trades(
         # Priority 4: Trailing SL Trigger (+1.0x ATR / +1.5% spot move)
         if alert_msg is None and not pos.get("trailing_sl_active", False):
             if direction == "BULLISH" and current_spot >= entry_spot * 1.015:
-                alert_msg = f"🚨 MOVE SL TO ENTRY: Price reached +1.0x ATR (₹{current_spot:,.2f}). Shift broker SL to ₹{entry_spot:,.2f}."
-                action_type = "TRAILING_SL"
                 pos["trailing_sl_active"] = True
+                new_sl = max(sl_spot, round(current_spot - (1.0 * atr), 2))
+                sl_spot = new_sl
+                pos["sl_spot"] = sl_spot
+                alert_msg = f"🚨 MOVE SL TO ENTRY: Price reached +1.0x ATR (₹{current_spot:,.2f}). Shift broker SL to ₹{sl_spot:,.2f}."
+                action_type = "TRAILING_SL"
             elif direction == "BEARISH" and current_spot <= entry_spot * 0.985:
-                alert_msg = f"🚨 MOVE SL TO ENTRY: Price reached +1.0x ATR (₹{current_spot:,.2f}). Shift broker SL to ₹{entry_spot:,.2f}."
-                action_type = "TRAILING_SL"
                 pos["trailing_sl_active"] = True
+                new_sl = min(sl_spot, round(current_spot + (1.0 * atr), 2)) if sl_spot > 0 else round(current_spot + (1.0 * atr), 2)
+                sl_spot = new_sl
+                pos["sl_spot"] = sl_spot
+                alert_msg = f"🚨 MOVE SL TO ENTRY: Price reached +1.0x ATR (₹{current_spot:,.2f}). Shift broker SL to ₹{sl_spot:,.2f}."
+                action_type = "TRAILING_SL"
 
         # Priority 5: 13:30 Time Stop (-3% to +3% stagnant trade, strictly during live session 13:30-15:10)
         if alert_msg is None and is_market_session_active(now_ist) and (time_1330 <= current_time < time_1510) and -3.0 <= spot_pnl_pct <= 3.0:
@@ -195,25 +220,31 @@ def monitor_active_trades(
         if alert_msg:
             pos["action_alert"] = alert_msg
             pos["action_type"] = action_type
-            alerts.append(
-                {
-                    "trade_id": pos.get("trade_id", "TRD-000"),
-                    "symbol": sym,
-                    "strategy": pos.get("strategy", "Option Strategy"),
-                    "direction": direction,
-                    "action_alert": alert_msg,
-                    "action_type": action_type,
-                    "current_spot": current_spot,
-                    "current_ltp": current_ltp,
-                    "unrealized_pnl": pnl_rupees,
-                }
-            )
+            alert_payload = {
+                "trade_id": pos.get("trade_id", "TRD-000"),
+                "symbol": sym,
+                "strategy": pos.get("strategy", "Option Strategy"),
+                "direction": direction,
+                "action_alert": alert_msg,
+                "action_type": action_type,
+                "current_spot": current_spot,
+                "current_ltp": current_ltp,
+                "unrealized_pnl": pnl_rupees,
+            }
+            if "slippage_inr" in pos:
+                alert_payload["slippage_inr"] = pos["slippage_inr"]
+            alerts.append(alert_payload)
 
     # Atomic JSON writes to prevent file corruption
     try:
-        _atomic_json_write(DEFAULT_ACTIVE_POS_FILE, positions)
-        _atomic_json_write(DEFAULT_ACTIVE_TRADES_FILE, positions)
+        _atomic_json_write(pos_path, positions)
+        if pos_path in (DEFAULT_ACTIVE_POS_FILE, DEFAULT_ACTIVE_TRADES_FILE):
+            if DEFAULT_ACTIVE_POS_FILE.exists():
+                _atomic_json_write(DEFAULT_ACTIVE_POS_FILE, positions)
+            if DEFAULT_ACTIVE_TRADES_FILE.exists():
+                _atomic_json_write(DEFAULT_ACTIVE_TRADES_FILE, positions)
     except Exception as err:
         logger.error(f"Error persisting updated positions: {err}")
 
     return alerts
+

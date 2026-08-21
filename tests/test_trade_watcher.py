@@ -363,3 +363,327 @@ def test_trade_logging_payload_structure():
     assert payload["direction"] in ("BULLISH", "BEARISH")
     assert payload["status"] == "OPEN"
     assert payload["margin_blocked"] > 0
+
+
+@pytest.mark.parametrize(
+    "direction, entry_spot, sl_spot, target_spot, live_quote_spot, expected_action, description",
+    [
+        ("BULLISH", 2500.0, 2450.0, 2600.0, 2380.0, "SL_HIT", "Bullish gap down past SL"),
+        ("BULLISH", 2500.0, 2450.0, 2600.0, 2720.0, "TARGET_HIT", "Bullish gap up past target"),
+        ("BEARISH", 4200.0, 4300.0, 4050.0, 4380.0, "SL_HIT", "Bearish gap up past SL"),
+        ("BEARISH", 4200.0, 4300.0, 4050.0, 3950.0, "TARGET_HIT", "Bearish gap down past target"),
+    ],
+)
+def test_parameterized_gap_slippage_scenarios(
+    tmp_path, direction, entry_spot, sl_spot, target_spot, live_quote_spot, expected_action, description
+):
+    """Test gap slippage past SL and target levels for both BULLISH and BEARISH positions."""
+    pos_file = tmp_path / "active_positions.json"
+
+    positions = [
+        {
+            "trade_id": f"TRD-GAP-{direction}",
+            "symbol": "MOCKSYM",
+            "strategy": "Debit Spread",
+            "direction": direction,
+            "entry_premium": 50.0,
+            "entry_spot": entry_spot,
+            "target_spot": target_spot,
+            "sl_spot": sl_spot,
+            "current_spot": entry_spot,
+            "current_ltp": 50.0,
+            "stop_loss": 35.0,
+            "target": 75.0,
+            "status": "OPEN",
+            "quantity_lots": 1,
+            "lot_size": 100,
+            "margin_blocked": 10000.0,
+            "trailing_sl_active": False,
+        }
+    ]
+
+    with open(pos_file, "w", encoding="utf-8") as f:
+        json.dump(positions, f, indent=2)
+
+    mock_quotes = {
+        "MOCKSYM": {
+            "ltp": live_quote_spot,
+            "volume": 1000.0,
+            "high": live_quote_spot + 10.0,
+            "low": live_quote_spot - 10.0,
+            "close": live_quote_spot,
+            "open": entry_spot,
+        }
+    }
+
+    test_time = datetime(2026, 8, 17, 10, 30)
+    alerts = monitor_active_trades(active_file=pos_file, quotes_override=mock_quotes, now_dt_override=test_time)
+
+    assert len(alerts) == 1, f"Failed on scenario: {description}"
+    assert alerts[0]["action_type"] == expected_action
+    assert alerts[0]["current_spot"] == live_quote_spot
+
+    # Verify persisted JSON file reflects updated current_spot
+    with open(pos_file, "r", encoding="utf-8") as f:
+        saved_positions = json.load(f)
+    assert saved_positions[0]["current_spot"] == live_quote_spot
+
+
+@pytest.mark.parametrize(
+    "test_time, quote_map, expected_alert_actions",
+    [
+        (
+            datetime(2026, 8, 17, 10, 30),  # 10:30 AM Mid-morning
+            {
+                "RELIANCE": 2545.0,  # BULLISH: +1.8% -> TRAILING_SL
+                "TCS": 4130.0,       # BEARISH: -1.67% -> TRAILING_SL
+                "INFY": 1420.0,      # BULLISH: gap down past SL (1450) -> SL_HIT
+                "HDFCBANK": 1500.0,  # BEARISH: gap down past Target (1540) -> TARGET_HIT
+            },
+            {
+                "TRD-MULTI-01": "TRAILING_SL",
+                "TRD-MULTI-02": "TRAILING_SL",
+                "TRD-MULTI-03": "SL_HIT",
+                "TRD-MULTI-04": "TARGET_HIT",
+            },
+        ),
+        (
+            datetime(2026, 8, 17, 15, 15),  # 15:15 PM EOD Square Off period
+            {
+                "RELIANCE": 2545.0,
+                "TCS": 4130.0,
+                "INFY": 1420.0,
+                "HDFCBANK": 1500.0,
+            },
+            {
+                "TRD-MULTI-01": "EOD_EXIT",
+                "TRD-MULTI-02": "EOD_EXIT",
+                "TRD-MULTI-03": "EOD_EXIT",
+                "TRD-MULTI-04": "EOD_EXIT",
+            },
+        ),
+    ],
+)
+def test_parameterized_simultaneous_multi_position_monitoring(
+    tmp_path, test_time, quote_map, expected_alert_actions
+):
+    """Test simultaneous evaluation of multiple open BULLISH and BEARISH positions."""
+    pos_file = tmp_path / "active_positions.json"
+
+    positions = [
+        {
+            "trade_id": "TRD-MULTI-01",
+            "symbol": "RELIANCE",
+            "strategy": "Bull Call Spread",
+            "direction": "BULLISH",
+            "entry_premium": 50.0,
+            "entry_spot": 2500.0,
+            "target_spot": 2600.0,
+            "sl_spot": 2450.0,
+            "current_spot": 2500.0,
+            "current_ltp": 50.0,
+            "status": "OPEN",
+            "quantity_lots": 1,
+            "lot_size": 250,
+            "trailing_sl_active": False,
+        },
+        {
+            "trade_id": "TRD-MULTI-02",
+            "symbol": "TCS",
+            "strategy": "Bear Put Debit Spread",
+            "direction": "BEARISH",
+            "entry_premium": 40.0,
+            "entry_spot": 4200.0,
+            "target_spot": 4050.0,
+            "sl_spot": 4300.0,
+            "current_spot": 4200.0,
+            "current_ltp": 40.0,
+            "status": "OPEN",
+            "quantity_lots": 1,
+            "lot_size": 175,
+            "trailing_sl_active": False,
+        },
+        {
+            "trade_id": "TRD-MULTI-03",
+            "symbol": "INFY",
+            "strategy": "Naked Long CE",
+            "direction": "BULLISH",
+            "entry_premium": 30.0,
+            "entry_spot": 1500.0,
+            "target_spot": 1550.0,
+            "sl_spot": 1450.0,
+            "current_spot": 1500.0,
+            "current_ltp": 30.0,
+            "status": "OPEN",
+            "quantity_lots": 1,
+            "lot_size": 400,
+            "trailing_sl_active": False,
+        },
+        {
+            "trade_id": "TRD-MULTI-04",
+            "symbol": "HDFCBANK",
+            "strategy": "Bear Call Credit Spread",
+            "direction": "BEARISH",
+            "entry_premium": 25.0,
+            "entry_spot": 1600.0,
+            "target_spot": 1540.0,
+            "sl_spot": 1640.0,
+            "current_spot": 1600.0,
+            "current_ltp": 25.0,
+            "status": "OPEN",
+            "quantity_lots": 1,
+            "lot_size": 550,
+            "trailing_sl_active": False,
+        },
+    ]
+
+    with open(pos_file, "w", encoding="utf-8") as f:
+        json.dump(positions, f, indent=2)
+
+    mock_quotes = {
+        sym: {"ltp": spot, "volume": 1000.0, "high": spot + 5.0, "low": spot - 5.0, "close": spot, "open": spot}
+        for sym, spot in quote_map.items()
+    }
+
+    alerts = monitor_active_trades(active_file=pos_file, quotes_override=mock_quotes, now_dt_override=test_time)
+
+    assert len(alerts) == len(expected_alert_actions)
+    alert_map = {a["trade_id"]: a["action_type"] for a in alerts}
+
+    for trade_id, expected_type in expected_alert_actions.items():
+        assert alert_map[trade_id] == expected_type
+
+
+@pytest.mark.parametrize(
+    "direction, entry_spot, sl_spot, target_spot, quote_spot, initial_trailing_active, expected_alert, expected_final_trailing_active",
+    [
+        ("BULLISH", 1000.0, 970.0, 1050.0, 1020.0, False, "TRAILING_SL", True),
+        ("BULLISH", 1000.0, 970.0, 1050.0, 1020.0, True, None, True),
+        ("BEARISH", 1000.0, 1030.0, 950.0, 980.0, False, "TRAILING_SL", True),
+        ("BEARISH", 1000.0, 1030.0, 950.0, 980.0, True, None, True),
+    ],
+)
+def test_parameterized_dynamic_trailing_sl_advancement(
+    tmp_path,
+    direction,
+    entry_spot,
+    sl_spot,
+    target_spot,
+    quote_spot,
+    initial_trailing_active,
+    expected_alert,
+    expected_final_trailing_active,
+):
+    """Test dynamic trailing SL state transitions for BULLISH and BEARISH positions."""
+    pos_file = tmp_path / "active_positions.json"
+
+    positions = [
+        {
+            "trade_id": "TRD-TRAIL-01",
+            "symbol": "TESTSYM",
+            "strategy": "Spread",
+            "direction": direction,
+            "entry_premium": 20.0,
+            "entry_spot": entry_spot,
+            "target_spot": target_spot,
+            "sl_spot": sl_spot,
+            "current_spot": entry_spot,
+            "current_ltp": 20.0,
+            "status": "OPEN",
+            "quantity_lots": 1,
+            "lot_size": 100,
+            "trailing_sl_active": initial_trailing_active,
+        }
+    ]
+
+    with open(pos_file, "w", encoding="utf-8") as f:
+        json.dump(positions, f, indent=2)
+
+    mock_quotes = {
+        "TESTSYM": {"ltp": quote_spot, "volume": 500.0, "high": quote_spot, "low": quote_spot, "close": quote_spot, "open": entry_spot}
+    }
+
+    test_time = datetime(2026, 8, 17, 11, 15)
+    alerts = monitor_active_trades(active_file=pos_file, quotes_override=mock_quotes, now_dt_override=test_time)
+
+    if expected_alert is None:
+        assert len(alerts) == 0
+    else:
+        assert len(alerts) == 1
+        assert alerts[0]["action_type"] == expected_alert
+
+    # Verify atomic update persisted the expected trailing_sl_active state
+    with open(pos_file, "r", encoding="utf-8") as f:
+        saved = json.load(f)
+    assert saved[0]["trailing_sl_active"] == expected_final_trailing_active
+
+
+@pytest.mark.parametrize(
+    "eval_time, is_eod_expected",
+    [
+        (datetime(2026, 8, 17, 10, 0), False),
+        (datetime(2026, 8, 17, 13, 0), False),
+        (datetime(2026, 8, 17, 15, 10), True),
+        (datetime(2026, 8, 17, 15, 20), True),
+        (datetime(2026, 8, 17, 15, 30), True),
+        (datetime(2026, 8, 17, 15, 35), False),
+    ],
+)
+def test_parameterized_eod_square_off_time_window(tmp_path, eval_time, is_eod_expected):
+    """Test 15:10 EOD square-off activation across various market hours for multiple positions."""
+    pos_file = tmp_path / "active_positions.json"
+
+    positions = [
+        {
+            "trade_id": "TRD-EOD-BULL",
+            "symbol": "RELIANCE",
+            "strategy": "Bull Call Spread",
+            "direction": "BULLISH",
+            "entry_premium": 50.0,
+            "entry_spot": 2500.0,
+            "target_spot": 2600.0,
+            "sl_spot": 2450.0,
+            "current_spot": 2500.0,
+            "current_ltp": 50.0,
+            "status": "OPEN",
+            "quantity_lots": 1,
+            "lot_size": 250,
+            "trailing_sl_active": False,
+        },
+        {
+            "trade_id": "TRD-EOD-BEAR",
+            "symbol": "TCS",
+            "strategy": "Bear Put Spread",
+            "direction": "BEARISH",
+            "entry_premium": 40.0,
+            "entry_spot": 4200.0,
+            "target_spot": 4050.0,
+            "sl_spot": 4300.0,
+            "current_spot": 4200.0,
+            "current_ltp": 40.0,
+            "status": "OPEN",
+            "quantity_lots": 1,
+            "lot_size": 175,
+            "trailing_sl_active": False,
+        },
+    ]
+
+    with open(pos_file, "w", encoding="utf-8") as f:
+        json.dump(positions, f, indent=2)
+
+    mock_quotes = {
+        "RELIANCE": {"ltp": 2510.0, "volume": 1000.0, "high": 2515.0, "low": 2495.0, "close": 2510.0, "open": 2500.0},
+        "TCS": {"ltp": 4190.0, "volume": 500.0, "high": 4205.0, "low": 4185.0, "close": 4190.0, "open": 4200.0},
+    }
+
+    alerts = monitor_active_trades(active_file=pos_file, quotes_override=mock_quotes, now_dt_override=eval_time)
+
+    if is_eod_expected:
+        assert len(alerts) == 2
+        for alert in alerts:
+            assert alert["action_type"] == "EOD_EXIT"
+            assert "15:10 SQUARE OFF" in alert["action_alert"]
+    else:
+        eod_alerts = [a for a in alerts if a["action_type"] == "EOD_EXIT"]
+        assert len(eod_alerts) == 0
+
