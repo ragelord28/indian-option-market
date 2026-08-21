@@ -3,11 +3,21 @@ Synthetic Options Pricing & Delta Strike Solver Module using Black-Scholes-Merto
 
 Enables historical options trade simulation off underlying equity OHLCV data
 without requiring expensive historical tick option datasets.
+Uses pure analytical Black-Scholes implementation with Python standard library math.
 """
 
+import math
 import numpy as np
-from py_vollib.black_scholes import black_scholes
-from py_vollib.black_scholes.greeks.analytical import delta
+
+_SQRT2 = math.sqrt(2.0)
+
+
+def _std_norm_cdf(x: float) -> float:
+    """
+    Cumulative distribution function for standard normal distribution N(x).
+    Uses standard library math.erf for high speed and exact precision.
+    """
+    return 0.5 * (1.0 + math.erf(x / _SQRT2))
 
 
 def calculate_option_price(
@@ -19,7 +29,7 @@ def calculate_option_price(
     sigma: float = 0.20,
 ) -> float:
     """
-    Calculates Black-Scholes option price, handling expiration safely.
+    Calculates analytical Black-Scholes option price, handling expiration safely.
 
     Args:
         flag: Option flag ('c' for Call, 'p' for Put).
@@ -36,16 +46,71 @@ def calculate_option_price(
         return 0.0
 
     t = days_to_expiry / 365.0
-    if t <= 0.001:  # Expired or expiring today (intrinsic value)
-        return float(max(S - K, 0.0) if flag == "c" else max(K - S, 0.0))
+    flag_lower = flag.lower()
+    is_call = flag_lower.startswith("c")
 
-    # Safe sigma bounds
+    if t <= 0.001:  # Expired or expiring today (intrinsic value)
+        return float(max(S - K, 0.0) if is_call else max(K - S, 0.0))
+
     safe_sigma = max(sigma, 0.01)
     try:
-        price = float(black_scholes(flag, S, K, t, r, safe_sigma))
-        return max(price, 0.0)
+        sqrt_t = math.sqrt(t)
+        d1 = (math.log(S / K) + (r + 0.5 * safe_sigma * safe_sigma) * t) / (safe_sigma * sqrt_t)
+        d2 = d1 - safe_sigma * sqrt_t
+        if is_call:
+            price = S * _std_norm_cdf(d1) - K * math.exp(-r * t) * _std_norm_cdf(d2)
+        else:
+            price = K * math.exp(-r * t) * _std_norm_cdf(-d2) - S * _std_norm_cdf(-d1)
+        return float(max(price, 0.0))
     except Exception:
-        return float(max(S - K, 0.0) if flag == "c" else max(K - S, 0.0))
+        return float(max(S - K, 0.0) if is_call else max(K - S, 0.0))
+
+
+def calculate_option_delta(
+    flag: str,
+    S: float,
+    K: float,
+    days_to_expiry: float,
+    r: float = 0.065,
+    sigma: float = 0.20,
+) -> float:
+    """
+    Calculates analytical option Delta using _std_norm_cdf(d1).
+
+    Args:
+        flag: Option flag ('c' for Call, 'p' for Put).
+        S: Current underlying asset spot price.
+        K: Strike price of the option contract.
+        days_to_expiry: Remaining time to expiration in days.
+        r: Annualized risk-free interest rate (default 0.065).
+        sigma: Implied volatility as a decimal (default 0.20).
+
+    Returns:
+        Delta value (+0.0 to +1.0 for Call, -1.0 to 0.0 for Put).
+    """
+    if S <= 0 or K <= 0:
+        return 0.0
+
+    t = days_to_expiry / 365.0
+    flag_lower = flag.lower()
+    is_call = flag_lower.startswith("c")
+
+    if t <= 0.001:
+        if is_call:
+            return 1.0 if S > K else 0.0
+        else:
+            return -1.0 if S < K else 0.0
+
+    safe_sigma = max(sigma, 0.01)
+    try:
+        sqrt_t = math.sqrt(t)
+        d1 = (math.log(S / K) + (r + 0.5 * safe_sigma * safe_sigma) * t) / (safe_sigma * sqrt_t)
+        if is_call:
+            return float(_std_norm_cdf(d1))
+        else:
+            return float(_std_norm_cdf(d1) - 1.0)
+    except Exception:
+        return 0.5 if is_call else -0.5
 
 
 def find_strike_for_delta(
@@ -100,10 +165,18 @@ def find_strike_for_delta(
     best_strike = float(S)
     best_diff = 999.0
 
+    sqrt_t = math.sqrt(t)
+    sigma_sqrt_t = safe_sigma * sqrt_t
+    r_plus_half_sig2_t = (r + 0.5 * safe_sigma * safe_sigma) * t
+    is_call = flag.lower().startswith("c")
+
     for k_mult in np.linspace(0.70, 1.30, 61):
         K = round(S * k_mult, 2)
+        if K <= 0:
+            continue
         try:
-            d = abs(delta(flag, S, K, t, r, safe_sigma))
+            d1 = (math.log(S / K) + r_plus_half_sig2_t) / sigma_sqrt_t
+            d = _std_norm_cdf(d1) if is_call else _std_norm_cdf(-d1)
             diff = abs(d - target_val)
             if diff < best_diff:
                 best_diff = diff

@@ -349,3 +349,208 @@ def test_full_fno_universe_strategy_generation(symbol, spot, bias, iv):
     assert ticket["strike"] > 0
     assert ticket["max_loss_inr"] > 0
     assert ticket["max_profit_inr"] > 0
+
+
+# ==============================================================================
+# SUB-₹100 F&O EQUITIES PARAMETERIZED EDGE-CASE UNIT TESTS
+# (e.g. IDEA, YESBANK, IDFCFIRSTB, PNB, NATIONALUM)
+# ==============================================================================
+
+@pytest.mark.parametrize(
+    "symbol, spot, expected_step, expected_snapped_strike",
+    [
+        ("IDEA", 8.35, 1.0, 8.0),
+        ("IDEA", 7.60, 1.0, 8.0),
+        ("IDEA", 11.20, 1.0, 11.0),
+        ("YESBANK", 14.25, 1.0, 14.0),
+        ("YESBANK", 18.80, 1.0, 19.0),
+        ("IDFCFIRSTB", 64.70, 1.0, 65.0),
+        ("IDFCFIRSTB", 71.20, 1.0, 71.0),
+        ("PNB", 92.15, 1.0, 92.0),
+        ("PNB", 98.60, 1.0, 99.0),
+        ("NATIONALUM", 87.40, 1.0, 87.0),
+        ("NATIONALUM", 94.85, 1.0, 95.0),
+        # Edge cases: boundary at ₹100, fractional spot, low spot
+        ("IDEA", 5.40, 1.0, 5.0),
+        ("PNB", 99.90, 1.0, 100.0),
+        ("PNB", 100.00, 1.0, 100.0),
+    ],
+)
+def test_sub_100_equities_strike_grid_snapping(symbol, spot, expected_step, expected_snapped_strike):
+    """Verify strike grid snapping and step determination for sub-₹100 F&O equities."""
+    from src.data.option_analytics import get_strike_step, snap_to_strike_grid
+
+    step = get_strike_step(spot)
+    assert step == expected_step
+
+    snapped = snap_to_strike_grid(spot, symbol=symbol)
+    assert snapped == expected_snapped_strike
+
+
+@pytest.mark.parametrize(
+    "symbol, spot_price, bias, expected_opt_type, expected_itm_strike",
+    [
+        ("IDEA", 8.50, "BULLISH", "CE", 7.0),
+        ("IDEA", 8.50, "BEARISH", "PE", 9.0),
+        ("YESBANK", 18.00, "BULLISH", "CE", 17.0),
+        ("YESBANK", 18.00, "BEARISH", "PE", 19.0),
+        ("IDFCFIRSTB", 65.00, "BULLISH", "CE", 64.0),
+        ("IDFCFIRSTB", 65.00, "BEARISH", "PE", 66.0),
+        ("PNB", 92.00, "BULLISH", "CE", 91.0),
+        ("PNB", 92.00, "BEARISH", "PE", 93.0),
+        ("NATIONALUM", 88.00, "BULLISH", "CE", 87.0),
+        ("NATIONALUM", 88.00, "BEARISH", "PE", 89.0),
+    ],
+)
+def test_sub_100_naked_itm_ticket_creation(symbol, spot_price, bias, expected_opt_type, expected_itm_strike):
+    """Verify ITM Sniper Naked ticket creation for sub-₹100 F&O equities for BULLISH and BEARISH biases."""
+    from src.data.strategy_builder import build_naked_itm_ticket
+
+    ticket = build_naked_itm_ticket(
+        symbol=symbol,
+        spot_price=spot_price,
+        bias=bias,
+        iv=0.35,
+    )
+
+    # Schema validation
+    required_keys = {
+        "symbol", "option_symbol", "option_type", "strike", "spot_price",
+        "target_spot", "sl_spot", "option_entry_limit", "option_target_exit",
+        "option_sl_exit", "max_profit_inr", "max_loss_inr", "lot_size"
+    }
+    assert required_keys.issubset(ticket.keys())
+
+    assert ticket["symbol"] == symbol
+    assert ticket["option_type"] == expected_opt_type
+    assert ticket["strike"] == expected_itm_strike
+    assert ticket["spot_price"] == spot_price
+    assert ticket["option_entry_limit"] > 0.0
+    assert ticket["option_target_exit"] > ticket["option_entry_limit"]
+    assert ticket["option_sl_exit"] <= ticket["option_entry_limit"]
+    assert ticket["max_profit_inr"] > 0.0
+    assert ticket["max_loss_inr"] > 0.0
+
+
+@pytest.mark.parametrize(
+    "symbol, spot, bias, live_ltp, target_spot, sl_spot, expected_target, expected_sl",
+    [
+        ("IDEA", 8.50, "BULLISH", 1.20, 9.00, 8.20, 1.53, 1.01),
+        ("IDFCFIRSTB", 65.00, "BULLISH", 2.50, 68.00, 63.50, 4.45, 1.53),
+        ("PNB", 92.00, "BEARISH", 3.20, 89.00, 93.50, 5.15, 2.23),
+        ("NATIONALUM", 88.00, "BULLISH", 2.80, 91.00, 86.50, 4.75, 1.83),
+    ],
+)
+def test_sub_100_delta_anchored_target_sl_calculation(
+    symbol, spot, bias, live_ltp, target_spot, sl_spot, expected_target, expected_sl
+):
+    """Verify Delta-anchored 0.65 option target and SL exit limit calculation for sub-₹100 stocks."""
+    from src.data.strategy_builder import build_naked_itm_ticket
+    from src.scanner.universe import get_lot_size
+
+    ticket = build_naked_itm_ticket(
+        symbol=symbol,
+        spot_price=spot,
+        bias=bias,
+        target_spot=target_spot,
+        sl_spot=sl_spot,
+        live_option_ltp=live_ltp,
+    )
+
+    lot = get_lot_size(symbol)
+
+    assert ticket["option_entry_limit"] == live_ltp
+    assert ticket["option_target_exit"] == expected_target
+    assert ticket["option_sl_exit"] == expected_sl
+
+    expected_profit_inr = round((expected_target - live_ltp) * lot, 2)
+    expected_loss_inr = round((live_ltp - expected_sl) * lot, 2)
+
+    assert ticket["max_profit_inr"] == expected_profit_inr
+    assert ticket["max_loss_inr"] == expected_loss_inr
+
+
+@pytest.mark.parametrize(
+    "symbol, spot, bias, expected_strike_str, expected_type",
+    [
+        ("IDEA", 8.50, "BULLISH", "7", "CE"),
+        ("IDEA", 8.50, "BEARISH", "9", "PE"),
+        ("YESBANK", 18.00, "BULLISH", "17", "CE"),
+        ("IDFCFIRSTB", 65.00, "BEARISH", "66", "PE"),
+        ("PNB", 92.00, "BULLISH", "91", "CE"),
+        ("NATIONALUM", 88.00, "BULLISH", "87", "CE"),
+    ],
+)
+def test_sub_100_option_symbol_formatting(symbol, spot, bias, expected_strike_str, expected_type):
+    """Verify option contract symbol string formatting for sub-₹100 stocks."""
+    from src.data.strategy_builder import build_naked_itm_ticket
+    from src.data.option_analytics import get_monthly_expiry_date
+
+    ticket = build_naked_itm_ticket(symbol=symbol, spot_price=spot, bias=bias)
+    exp_str = get_monthly_expiry_date().strftime("%d%b%y").upper()
+
+    expected_symbol = f"{symbol} {exp_str} {expected_strike_str} {expected_type}"
+    assert ticket["option_symbol"] == expected_symbol
+
+
+@pytest.mark.parametrize(
+    "symbol, expected_lot_size",
+    [
+        ("IDEA", 80000),
+        ("IDFCFIRSTB", 7500),
+        ("PNB", 4000),
+        ("NATIONALUM", 3750),
+        ("YESBANK", 250),
+    ],
+)
+def test_sub_100_lot_size_resolution(symbol, expected_lot_size):
+    """Verify lot size resolution for sub-₹100 equities from official registry and ticket overrides."""
+    from src.scanner.universe import get_lot_size
+    from src.data.strategy_builder import build_naked_itm_ticket
+
+    # Registry lookup
+    assert get_lot_size(symbol) == expected_lot_size
+
+    # Automatic ticket lot resolution when lot_size is None
+    ticket_auto = build_naked_itm_ticket(symbol=symbol, spot_price=50.0)
+    assert ticket_auto["lot_size"] == expected_lot_size
+
+    # Custom lot size parameter override
+    ticket_custom = build_naked_itm_ticket(symbol=symbol, spot_price=50.0, lot_size=999)
+    assert ticket_custom["lot_size"] == 999
+
+
+@pytest.mark.parametrize(
+    "symbol, spot, bias, ivr, vrp",
+    [
+        ("IDEA", 8.50, "BULLISH", 30.0, -1.5),
+        ("IDEA", 8.50, "BEARISH", 75.0, 5.0),
+        ("IDFCFIRSTB", 65.00, "BULLISH", 80.0, 4.0),
+        ("PNB", 92.00, "RANGEBOUND", 65.0, 2.0),
+        ("NATIONALUM", 88.00, "BULLISH", 25.0, -2.0),
+    ],
+)
+def test_sub_100_optimal_strategy_payload_integration(symbol, spot, bias, ivr, vrp):
+    """Verify build_optimal_strategy processes sub-₹100 stocks cleanly without calculation errors."""
+    import pandas as pd
+    from src.data.strategy_builder import build_optimal_strategy
+
+    ticket = build_optimal_strategy(
+        symbol=symbol,
+        spot_price=spot,
+        bias=bias,
+        ivr=ivr,
+        vrp=vrp,
+        option_chain_df=pd.DataFrame(),
+        conviction_score=85.0,
+    )
+
+    assert ticket["symbol"] == symbol
+    assert ticket["strike"] > 0
+    assert "naked_option" in ticket
+    assert "spread_option" in ticket
+    assert "payoff_curve" in ticket
+    assert len(ticket["payoff_curve"]["spot_range"]) == 50
+    assert ticket["max_profit"] > 0.0
+    assert ticket["max_loss"] > 0.0
+

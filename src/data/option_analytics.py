@@ -70,36 +70,63 @@ def get_days_to_monthly_expiry(dt: date | datetime | None = None) -> int:
     return max((expiry - dt).days, 1)
 
 
-def get_strike_step(spot: float) -> float:
-    """Official NSE Equity Option Strike Step Intervals"""
-    if spot <= 100:
+SYMBOL_STRIKE_STEPS: dict[str, float] = {
+    "MRF": 500.0,
+    "PAGEIND": 250.0,
+    "ABBOTINDIA": 250.0,
+    "BOSCHLTD": 250.0,
+    "ULTRACEMCO": 100.0,
+    "MARUTI": 100.0,
+    "SBIN": 5.0,
+    "IDEA": 0.50,
+}
+
+
+def get_strike_step(spot: float, symbol: str | None = None) -> float:
+    """Official NSE Equity Option Strike Step Intervals with symbol overrides."""
+    if symbol:
+        clean_sym = symbol.replace(".NS", "").replace("^", "").strip().upper()
+        if clean_sym in SYMBOL_STRIKE_STEPS:
+            return SYMBOL_STRIKE_STEPS[clean_sym]
+
+    if spot <= 25:
+        return 0.50   # e.g. IDEA, penny F&O equities
+    elif spot <= 100:
         return 1.0
     elif spot <= 250:
-        return 2.5   # e.g. ASHOKLEY (170, 172.5, 175, 177.5)
+        return 2.5    # e.g. ASHOKLEY (170, 172.5, 175, 177.5)
     elif spot <= 500:
-        return 5.0   # e.g. SBIN, PFC
+        return 5.0    # e.g. PFC, RECLTD
     elif spot <= 1000:
-        return 10.0  # e.g. ICICIBANK, AXISBANK
+        return 10.0   # e.g. ICICIBANK, AXISBANK
     elif spot <= 2500:
-        return 20.0  # e.g. RELIANCE, INFY
+        return 20.0   # e.g. RELIANCE, INFY
     elif spot <= 5000:
-        return 50.0  # e.g. TCS, BAJFINANCE
+        return 50.0   # e.g. TCS, BAJFINANCE
     else:
-        return 100.0 # e.g. HAL, PAGEIND, MARUTI
+        return 100.0  # High-priced stocks default step
 
 
 def snap_to_strike_grid(spot: float, strike_step: float | None = None, symbol: str | None = None) -> float:
     """
     Snaps price to the nearest real exchange-traded strike from the official contract master
-    when spot is within master range, otherwise falls back to step grid.
+    when spot is within master range, otherwise falls back to step grid with dynamic extrapolation.
     """
     if symbol:
         valid_strikes = get_real_exchange_strikes(symbol)
-        if valid_strikes and valid_strikes[0] <= spot <= valid_strikes[-1]:
-            return min(valid_strikes, key=lambda k: abs(k - spot))
+        if valid_strikes:
+            if valid_strikes[0] <= spot <= valid_strikes[-1]:
+                return min(valid_strikes, key=lambda k: abs(k - spot))
+            elif len(valid_strikes) >= 2 and strike_step is None:
+                # Dynamic extrapolation step from actual exchange master bounds
+                if spot > valid_strikes[-1]:
+                    strike_step = round(valid_strikes[-1] - valid_strikes[-2], 2)
+                else:
+                    strike_step = round(valid_strikes[1] - valid_strikes[0], 2)
+
     # Fallback if symbol is unspecified or spot out of range
     if strike_step is None:
-        strike_step = get_strike_step(spot)
+        strike_step = get_strike_step(spot, symbol=symbol)
     return round(round(spot / strike_step) * strike_step, 2)
 
 
@@ -111,7 +138,7 @@ def get_adjacent_exchange_strikes(symbol: str, spot: float, steps: int = 1) -> t
     valid_strikes = get_real_exchange_strikes(symbol)
     if not valid_strikes or not (valid_strikes[0] <= spot <= valid_strikes[-1]):
         atm = snap_to_strike_grid(spot, symbol=symbol)
-        step = get_strike_step(spot)
+        step = get_strike_step(spot, symbol=symbol)
         return atm - step, atm, atm + step
 
     # Find closest ATM strike index
@@ -346,10 +373,11 @@ def rank_strikes(
 def get_best_strike(
     option_chain_df: pd.DataFrame,
     spot_price: float,
-    underlying_target: float,
+    underlying_target: float | None = None,
     bias: str = "BULLISH",
     lot_size: int = 50,
     hv_20: float = 0.20,
+    symbol: str | None = None,
 ) -> Dict[str, Any]:
     """
     Select the single optimal 'Best Strike' option contract and calculate its expected target price,
@@ -362,6 +390,7 @@ def get_best_strike(
         bias: Directional strategy bias ('BULLISH' or 'BEARISH').
         lot_size: Option lot size (default 50).
         hv_20: 20-day Historical Volatility.
+        symbol: Ticker symbol.
 
     Returns:
         Dictionary containing best strike metrics:
@@ -371,7 +400,7 @@ def get_best_strike(
     opt_type = "CE" if is_bullish else "PE"
 
     if option_chain_df.empty or "strike_price" not in option_chain_df.columns:
-        snapped_spot_strike = snap_to_strike_grid(spot_price)
+        snapped_spot_strike = snap_to_strike_grid(spot_price, symbol=symbol)
         return {
             "strike": snapped_spot_strike,
             "type": opt_type,
