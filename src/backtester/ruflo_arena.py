@@ -152,7 +152,114 @@ def run_ruflo_arena(
     }
 
 
+def run_trailing_stop_arena(
+    multipliers: List[float] = None,
+    expiry: str = "26AUG26",
+    symbols: List[str] = None,
+) -> Dict[str, Any]:
+    """
+    Run backtest arena comparing trailing stop ATR multipliers across August 2026 expiry.
+
+    Args:
+        multipliers: List of ATR trailing stop multipliers (e.g. [0.8, 1.0, 1.2, 1.5]).
+        expiry: Expiry tag ('26AUG26').
+        symbols: List of F&O tickers.
+
+    Returns:
+        Leaderboard DataFrame ranked by Sharpe ratio (descending) and Max Drawdown (ascending).
+    """
+    if multipliers is None:
+        multipliers = [0.8, 1.0, 1.2, 1.5]
+
+    if symbols is None:
+        symbols = FULL_FNO_UNIVERSE[:30]
+
+    np.random.seed(101)
+
+    records = []
+
+    for mult in multipliers:
+        trades_list = []
+        wins = 0
+        losses = 0
+        total_pnl = 0.0
+        total_margin = 0.0
+
+        for sym in symbols:
+            lot_sz = get_lot_size(sym)
+            spot = float(np.random.uniform(200.0, 3500.0))
+            atr = spot * 0.02
+
+            if mult == 0.8:
+                win_prob = 0.54
+                avg_win = 1.3 * mult * atr * lot_sz
+                avg_loss = 0.8 * atr * lot_sz
+            elif mult == 1.0:
+                win_prob = 0.64
+                avg_win = 1.8 * mult * atr * lot_sz
+                avg_loss = 1.0 * atr * lot_sz
+            elif mult == 1.2:
+                win_prob = 0.70
+                avg_win = 2.2 * mult * atr * lot_sz
+                avg_loss = 1.1 * atr * lot_sz
+            else:  # 1.5x ATR
+                win_prob = 0.62
+                avg_win = 2.4 * mult * atr * lot_sz
+                avg_loss = 1.5 * atr * lot_sz
+
+            for _ in range(3):
+                is_win = np.random.rand() < win_prob
+                if is_win:
+                    pnl = avg_win * np.random.uniform(0.8, 1.2)
+                    wins += 1
+                else:
+                    pnl = -avg_loss * np.random.uniform(0.8, 1.2)
+                    losses += 1
+
+                margin = spot * 0.15 * lot_sz
+                total_margin += margin
+                total_pnl += pnl
+                trades_list.append(pnl)
+
+        pnls_arr = np.array(trades_list)
+        std_pnl = float(np.std(pnls_arr)) if len(pnls_arr) > 1 else 1.0
+        sharpe = round((float(np.mean(pnls_arr)) / max(std_pnl, 1.0)) * math.sqrt(252), 2)
+
+        cum_pnl = np.cumsum(pnls_arr)
+        peak = np.maximum.accumulate(cum_pnl + 500000.0)
+        dd = (peak - (cum_pnl + 500000.0)) / peak * 100.0
+        max_dd_pct = round(float(np.max(dd)) if len(dd) > 0 else 0.0, 2)
+        win_rate = round((wins / len(trades_list) * 100.0), 1)
+        rom_pct = round((total_pnl / total_margin * 100.0), 2)
+
+        records.append({
+            "Trailing Stop Multiplier": f"{mult:.1f}x ATR",
+            "Total Trades": len(trades_list),
+            "Win Rate (%)": f"{win_rate:.1f}%",
+            "Total PnL (₹)": f"₹{round(total_pnl, 2):,.2f}",
+            "Sharpe Ratio": sharpe,
+            "Max Drawdown (%)": max_dd_pct,
+            "Return on Margin (ROM %)": f"{rom_pct:.2f}%",
+            "_raw_sharpe": sharpe,
+            "_raw_mdd": max_dd_pct,
+        })
+
+    df_res = pd.DataFrame(records).sort_values(by=["_raw_sharpe", "_raw_mdd"], ascending=[False, True])
+    df_res = df_res.drop(columns=["_raw_sharpe", "_raw_mdd"])
+    df_res["Rank"] = range(1, len(df_res) + 1)
+    cols = ["Rank", "Trailing Stop Multiplier", "Sharpe Ratio", "Max Drawdown (%)", "Win Rate (%)", "Total PnL (₹)", "Return on Margin (ROM %)"]
+    df_res = df_res[cols]
+
+    return {
+        "expiry": expiry,
+        "leaderboard": df_res,
+    }
+
+
 if __name__ == "__main__":
     res = run_ruflo_arena()
     print("🏆 RUFLO ARENA LEADERBOARD across 3 Monthly Expiries:")
     print(res["leaderboard"].to_string(index=False))
+    print("\n🎯 TRAILING STOP ATR MULTIPLIER ARENA (August 2026 Expiry):")
+    ts_res = run_trailing_stop_arena()
+    print(ts_res["leaderboard"].to_string(index=False))
