@@ -2,7 +2,6 @@ import urllib.request
 import gzip
 import io
 import pandas as pd
-from datetime import datetime
 
 print("Fetching live Upstox NSE F&O Instrument Master...")
 url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz"

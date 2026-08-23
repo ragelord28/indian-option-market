@@ -27,7 +27,9 @@ against current spot, so no exit signal can be silently missed).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import difflib
+import io
 import json
 import logging
 import re
@@ -224,7 +226,9 @@ def get_premarket_shortlist(
         try:
             from src.scanner.eod_scanner import run_eod_scanner
 
-            run_eod_scanner()
+            # Keep downstream prints out of this API's stdout (CLI emits pure JSON)
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_eod_scanner()
             wl = _load_json(wl_path, wl)
         except Exception as err:
             logger.warning(f"D-1 scan attempt failed (feed offline?): {err}")
@@ -305,11 +309,13 @@ def poll_actionable_triggers_diff(
     today_str = now_ist.strftime("%Y-%m-%d")
 
     try:
-        radar = run_morning_radar(
-            watchlist_path=watchlist_path,
-            output_path=radar_path,
-            force_session_evaluation=force_session_evaluation,
-        )
+        # Keep the radar's progress prints out of this API's stdout (CLI emits pure JSON)
+        with contextlib.redirect_stdout(io.StringIO()):
+            radar = run_morning_radar(
+                watchlist_path=watchlist_path,
+                output_path=radar_path,
+                force_session_evaluation=force_session_evaluation,
+            )
     except Exception as err:
         logger.warning(f"Morning radar poll failed (feed offline?): {err}")
         radar = _load_json(Path(radar_path), {})
@@ -744,15 +750,19 @@ def daemon_loop(interval_sec: int = 300) -> None:
 
 def _cli() -> int:
     parser = argparse.ArgumentParser(prog="hermes_bridge", description="Hermes 'IND OPT MKT' agent bridge CLI")
+    # --json is accepted both before and after the subcommand
+    # (SUPPRESS keeps the subparser flag from clobbering a main-level True).
     parser.add_argument("--json", action="store_true", help="Emit raw JSON output")
+    json_parent = argparse.ArgumentParser(add_help=False)
+    json_parent.add_argument("--json", dest="json", action="store_true", default=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("status", help="Upstox auth, market phase, watchlist freshness")
-    sub.add_parser("premarket", help="D-1 shortlist summary for Buzz")
-    sub.add_parser("triggers", help="Diff poll: newly triggered ORB breakouts only")
-    sub.add_parser("positions", help="Diff poll: new actionable position alerts only")
+    sub.add_parser("status", parents=[json_parent], help="Upstox auth, market phase, watchlist freshness")
+    sub.add_parser("premarket", parents=[json_parent], help="D-1 shortlist summary for Buzz")
+    sub.add_parser("triggers", parents=[json_parent], help="Diff poll: newly triggered ORB breakouts only")
+    sub.add_parser("positions", parents=[json_parent], help="Diff poll: new actionable position alerts only")
 
-    p_log = sub.add_parser("log-trade", help="Log a user fill (NL text or explicit args)")
+    p_log = sub.add_parser("log-trade", parents=[json_parent], help="Log a user fill (NL text or explicit args)")
     p_log.add_argument("--text", default=None, help="e.g. 'Bought HEROMOTOCO 5700 CE at 104.90, 1 lot'")
     p_log.add_argument("--symbol", default=None)
     p_log.add_argument("--strike", type=float, default=None)
