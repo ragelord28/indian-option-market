@@ -6,7 +6,7 @@ via batch API calls, evaluates risk alerts with correct priority ordering:
   1. EOD_EXIT (15:10 PM mandatory square-off)
   2. SL_HIT (stop loss breached)
   3. TARGET_HIT (target reached)
-  4. TRAILING_SL (+1.0x ATR trailing stop)
+  4. TRAILING_SL (1.2x ATR trailing stop on +1.5% spot move)
   5. TIME_STOP (13:30 PM stagnant trade)
 
 Supports both BULLISH and BEARISH trade directions.
@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 import pytz
 
+from config.settings import TRAILING_STOP_ATR_MULTIPLIER, TRAILING_TRIGGER_SPOT_PCT
 from src.data.upstox_provider import fetch_live_quotes_batch
 from src.radar.morning_radar import is_market_session_active
 
@@ -54,7 +55,7 @@ def monitor_active_trades(
       1. EOD_EXIT — 15:10 PM mandatory square-off
       2. SL_HIT — stop loss breached
       3. TARGET_HIT — target price reached
-      4. TRAILING_SL — +1.0x ATR trailing stop trigger
+      4. TRAILING_SL — 1.2x ATR trailing stop on +1.5% spot move
       5. TIME_STOP — 13:30 PM stagnant trade exit
 
     Supports both BULLISH and BEARISH trade directions.
@@ -165,12 +166,14 @@ def monitor_active_trades(
         if atr <= 0:
             atr = entry_spot * 0.015
 
-        # Dynamic trailing stop calculation when trailing_sl_active is True
+        # Dynamic trailing stop calculation when trailing_sl_active is True.
+        # Bullish SL ratchets UP only (max); Bearish SL ratchets DOWN only (min).
         if pos.get("trailing_sl_active", False):
+            trail_dist = TRAILING_STOP_ATR_MULTIPLIER * atr
             if direction == "BULLISH":
-                new_sl = max(sl_spot, round(current_spot - (1.0 * atr), 2))
+                new_sl = max(sl_spot, round(current_spot - trail_dist, 2))
             else:
-                new_sl = min(sl_spot, round(current_spot + (1.0 * atr), 2)) if sl_spot > 0 else round(current_spot + (1.0 * atr), 2)
+                new_sl = min(sl_spot, round(current_spot + trail_dist, 2)) if sl_spot > 0 else round(current_spot + trail_dist, 2)
             sl_spot = new_sl
             pos["sl_spot"] = sl_spot
 
@@ -207,21 +210,24 @@ def monitor_active_trades(
                 alert_msg = "🎯 TARGET HIT: Target spot reached. Book profit on broker!"
                 action_type = "TARGET_HIT"
 
-        # Priority 4: Trailing SL Trigger (+1.0x ATR / +1.5% spot move)
+        # Priority 4: Trailing SL Trigger (1.2x ATR trail on +1.5% spot move)
         if alert_msg is None and not pos.get("trailing_sl_active", False):
-            if direction == "BULLISH" and current_spot >= entry_spot * 1.015:
+            trigger_up = entry_spot * (1.0 + TRAILING_TRIGGER_SPOT_PCT / 100.0)
+            trigger_dn = entry_spot * (1.0 - TRAILING_TRIGGER_SPOT_PCT / 100.0)
+            trail_dist = TRAILING_STOP_ATR_MULTIPLIER * atr
+            if direction == "BULLISH" and current_spot >= trigger_up:
                 pos["trailing_sl_active"] = True
-                new_sl = max(sl_spot, round(current_spot - (1.0 * atr), 2))
+                new_sl = max(sl_spot, round(current_spot - trail_dist, 2))
                 sl_spot = new_sl
                 pos["sl_spot"] = sl_spot
-                alert_msg = f"🚨 MOVE SL TO ENTRY: Price reached +1.0x ATR (₹{current_spot:,.2f}). Shift broker SL to ₹{sl_spot:,.2f}."
+                alert_msg = f"🚨 MOVE SL TO ENTRY: Spot rallied +{TRAILING_TRIGGER_SPOT_PCT:g}% (₹{current_spot:,.2f}). Trail SL at {TRAILING_STOP_ATR_MULTIPLIER:g}x ATR → ₹{sl_spot:,.2f}."
                 action_type = "TRAILING_SL"
-            elif direction == "BEARISH" and current_spot <= entry_spot * 0.985:
+            elif direction == "BEARISH" and current_spot <= trigger_dn:
                 pos["trailing_sl_active"] = True
-                new_sl = min(sl_spot, round(current_spot + (1.0 * atr), 2)) if sl_spot > 0 else round(current_spot + (1.0 * atr), 2)
+                new_sl = min(sl_spot, round(current_spot + trail_dist, 2)) if sl_spot > 0 else round(current_spot + trail_dist, 2)
                 sl_spot = new_sl
                 pos["sl_spot"] = sl_spot
-                alert_msg = f"🚨 MOVE SL TO ENTRY: Price reached +1.0x ATR (₹{current_spot:,.2f}). Shift broker SL to ₹{sl_spot:,.2f}."
+                alert_msg = f"🚨 MOVE SL TO ENTRY: Spot dropped -{TRAILING_TRIGGER_SPOT_PCT:g}% (₹{current_spot:,.2f}). Trail SL at {TRAILING_STOP_ATR_MULTIPLIER:g}x ATR → ₹{sl_spot:,.2f}."
                 action_type = "TRAILING_SL"
 
         # Priority 5: 13:30 Time Stop (-3% to +3% stagnant trade, strictly during live session 13:30-15:10)

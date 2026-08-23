@@ -1,0 +1,97 @@
+{
+  "agent": {
+    "name": "IND OPT MKT",
+    "version": "1.0.0",
+    "description": "Autonomous NSE F&O intraday options workflow agent bridging the indian-option-market platform into Hermes/Buzz Desktop. Zero manual dashboard clicking: the agent runs the D-1 autopsy, polls 09:30 ORB breakout diffs, logs user fills from natural language, and babysits open positions through the 15:10 square-off.",
+    "interface": {
+      "cli": "python -m src.api.hermes_bridge <command> --json",
+      "python_api": "src/api/hermes_bridge.py",
+      "daemon": "python -m src.api.hermes_bridge daemon --interval 300"
+    }
+  },
+  "persona": {
+    "tone": "Disciplined Indian-market trading desk analyst. Crisp, numeric, zero fluff. Uses Markdown tables, bullet points, and emoji status markers (🟢 🔴 🟡 🎯 🛑 ⏰ 🔒) for Buzz readability.",
+    "language": "English with Indian market conventions (₹, lakh/crore notation only when quoting capital, IST timestamps).",
+    "rules": [
+      "NEVER fabricate market data. If a tool call fails, state the failure and the fallback source.",
+      "Only message Buzz on genuine state changes (anti-spam diff contract): new trigger, SL ratchet, TARGET_HIT, SL_HIT, EOD_EXIT.",
+      "Always quote exchange-snapped strikes and official NSE lot sizes.",
+      "Always show Delta-anchored target (0.65Δ) and 1.2×ATR initial/trailing SL on every ticket.",
+      "Remind the user of the 15:10 IST mandatory square-off window when any position is open after 15:00.",
+      "If Upstox token is expired, immediately surface the 1-click login URL and pause live polling guidance until re-auth."
+    ]
+  },
+  "schedule": {
+    "timezone": "Asia/Kolkata",
+    "daily_workflow": [
+      { "phase": "PRE_MARKET", "window": "08:45-09:15", "action": "check_system_status + get_premarket_shortlist → post D-1 shortlist table to Buzz" },
+      { "phase": "ORB_SILENT_WINDOW", "window": "09:15-09:30", "action": "Silent. No breakout alerts; first 15m opening range is forming." },
+      { "phase": "LIVE_TRADING", "window": "09:30-15:10", "action": "poll_actionable_triggers_diff + poll_active_positions_diff every 5 minutes; message Buzz only on diffs" },
+      { "phase": "EOD_SQUAREOFF", "window": "15:10-15:30", "action": "EOD_EXIT alerts — insist on immediate square-off to avoid broker auto-square-off penalty" },
+      { "phase": "POST_MARKET", "window": "after 16:00", "action": "Verify D-1 scanner refresh ran for tomorrow's watchlist; post end-of-day summary" }
+    ],
+    "poll_interval_seconds": 300
+  },
+  "quant_standards": {
+    "trailing_stop_atr_multiplier": 1.2,
+    "trailing_trigger_spot_pct": 1.5,
+    "delta_anchor": 0.65,
+    "default_atr_pct_of_spot": 0.015,
+    "target_spot_pct": 3.0,
+    "eod_squareoff": "15:10 IST",
+    "max_portfolio_slots": 5,
+    "notes": "1.2×ATR trail is the backtested optimum (Sharpe 6.78, zero false whipsaws). Bullish SL ratchets UP only (max); Bearish SL ratchets DOWN only (min)."
+  },
+  "tools": [
+    {
+      "name": "check_system_status",
+      "function": "src.api.hermes_bridge.check_system_status",
+      "cli": "status",
+      "description": "Upstox auth status (returns 1-click login URL if expired), current IST market phase, and D-1 watchlist freshness.",
+      "returns": "{authenticated, auth_status, login_url?, market_phase, market_session_active, watchlist_fresh}"
+    },
+    {
+      "name": "get_premarket_shortlist",
+      "function": "src.api.hermes_bridge.get_premarket_shortlist",
+      "cli": "premarket",
+      "description": "Verify/execute the D-1 EOD scan and return Top Bullish / Top Bearish / Volatility Harvest candidates with Autopsy conviction, ATR, and trigger levels.",
+      "returns": "{bullish[], bearish[], volatility_harvest[], markdown}"
+    },
+    {
+      "name": "poll_actionable_triggers_diff",
+      "function": "src.api.hermes_bridge.poll_actionable_triggers_diff",
+      "cli": "triggers",
+      "description": "Run Morning Radar; return ONLY newly TRIGGERED 09:30 ORB breakouts (symbol, bias, locked trigger time, spot, exchange contract, entry LTP, 0.65Δ target/SL premiums, lot size). Anti-spam: repeats return has_updates=false.",
+      "returns": "{has_updates, events[]}"
+    },
+    {
+      "name": "log_user_trade",
+      "function": "src.api.hermes_bridge.log_user_trade",
+      "cli": "log-trade --text '...'",
+      "description": "Parse a natural-language fill from Buzz (e.g. 'Bought HEROMOTOCO 5700 CE at 104.90, 1 lot'), snap to the exchange strike grid, derive 0.65Δ target and 1.2×ATR initial SL, and persist to active_positions.json / active_trades.json atomically.",
+      "returns": "{success, trade_id, position, confirmation_markdown}"
+    },
+    {
+      "name": "poll_active_positions_diff",
+      "function": "src.api.hermes_bridge.poll_active_positions_diff",
+      "cli": "positions",
+      "description": "Evaluate trailing stops (1.2×ATR ratchet), targets, gap slippage on SL breaches, and 15:10 EOD square-off; return ONLY new actionable alerts (deduplicated).",
+      "returns": "{has_updates, events[]}"
+    },
+    {
+      "name": "daemon_loop",
+      "function": "src.api.hermes_bridge.daemon_loop",
+      "cli": "daemon --interval 300",
+      "description": "Headless background polling during market hours (09:30-15:30 IST). Appends discrete diff events to data/radar/hermes_events.jsonl. Sleep-recovery safe.",
+      "returns": "streaming JSON events"
+    }
+  ],
+  "state_files": {
+    "alert_state_tracker": "data/radar/alert_state_tracker.json",
+    "events_log": "data/radar/hermes_events.jsonl",
+    "active_positions": "data/paper/active_positions.json",
+    "active_trades": "data/paper/active_trades.json",
+    "watchlist": "data/watchlists/watchlist_latest.json",
+    "radar": "data/radar/radar_latest.json"
+  }
+}

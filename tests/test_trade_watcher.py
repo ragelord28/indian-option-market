@@ -13,9 +13,8 @@ Covers:
 from datetime import datetime
 import json
 import pytest
-from pathlib import Path
 
-from src.data.upstox_provider import fetch_live_quotes_batch, UpstoxProvider
+from src.data.upstox_provider import fetch_live_quotes_batch
 from src.radar.trade_watcher import monitor_active_trades
 
 
@@ -732,8 +731,8 @@ def test_dynamic_tick_by_tick_trailing_stop_calculation(tmp_path):
     with open(pos_file, "w", encoding="utf-8") as f:
         json.dump(positions, f, indent=2)
 
-    # Tick 1: RELIANCE spot goes to 2550 (new_sl = max(2450, round(2550 - 37.5)) = 2512.5)
-    # TCS spot drops to 4130 (new_sl = min(4300, round(4130 + 63)) = 4193.0)
+    # Tick 1: RELIANCE spot goes to 2550 (trail = 1.2*37.5 = 45.0; new_sl = max(2450, 2550 - 45.0) = 2505.0)
+    # TCS spot drops to 4130 (trail = 1.2*63 = 75.6; new_sl = min(4300, 4130 + 75.6) = 4205.6)
     mock_quotes_1 = {
         "RELIANCE": {"ltp": 2550.0, "volume": 1000.0},
         "TCS": {"ltp": 4130.0, "volume": 500.0},
@@ -746,11 +745,11 @@ def test_dynamic_tick_by_tick_trailing_stop_calculation(tmp_path):
         saved_1 = json.load(f)
 
     pos_map_1 = {p["trade_id"]: p for p in saved_1}
-    assert pos_map_1["TRD-DYN-BULL"]["sl_spot"] == 2512.5
-    assert pos_map_1["TRD-DYN-BEAR"]["sl_spot"] == 4193.0
+    assert pos_map_1["TRD-DYN-BULL"]["sl_spot"] == 2505.0
+    assert pos_map_1["TRD-DYN-BEAR"]["sl_spot"] == 4205.6
 
-    # Tick 2: RELIANCE spot moves to 2580 (new_sl = max(2512.5, round(2580 - 37.5)) = 2542.5)
-    # TCS spot drops to 4080 (new_sl = min(4193, round(4080 + 63)) = 4143.0)
+    # Tick 2: RELIANCE spot moves to 2580 (new_sl = max(2505.0, 2580 - 45.0) = 2535.0)
+    # TCS spot drops to 4080 (new_sl = min(4205.6, 4080 + 75.6) = 4155.6)
     mock_quotes_2 = {
         "RELIANCE": {"ltp": 2580.0, "volume": 1200.0},
         "TCS": {"ltp": 4080.0, "volume": 600.0},
@@ -761,10 +760,10 @@ def test_dynamic_tick_by_tick_trailing_stop_calculation(tmp_path):
         saved_2 = json.load(f)
 
     pos_map_2 = {p["trade_id"]: p for p in saved_2}
-    assert pos_map_2["TRD-DYN-BULL"]["sl_spot"] == 2542.5
-    assert pos_map_2["TRD-DYN-BEAR"]["sl_spot"] == 4143.0
+    assert pos_map_2["TRD-DYN-BULL"]["sl_spot"] == 2535.0
+    assert pos_map_2["TRD-DYN-BEAR"]["sl_spot"] == 4155.6
 
-    # Tick 3: RELIANCE spot pulls back to 2560 (new_sl = max(2542.5, 2522.5) = 2542.5 -- sl_spot must NOT move down!)
+    # Tick 3: RELIANCE spot pulls back to 2560 (new_sl = max(2535.0, 2515.0) = 2535.0 -- sl_spot must NOT move down!)
     mock_quotes_3 = {
         "RELIANCE": {"ltp": 2560.0, "volume": 1200.0},
         "TCS": {"ltp": 4080.0, "volume": 600.0},
@@ -775,7 +774,7 @@ def test_dynamic_tick_by_tick_trailing_stop_calculation(tmp_path):
         saved_3 = json.load(f)
 
     pos_map_3 = {p["trade_id"]: p for p in saved_3}
-    assert pos_map_3["TRD-DYN-BULL"]["sl_spot"] == 2542.5
+    assert pos_map_3["TRD-DYN-BULL"]["sl_spot"] == 2535.0
 
 
 def test_gap_slippage_calculation_on_sl_hit(tmp_path):
