@@ -7,12 +7,12 @@ Implements Phase 9.9 Red Team Remediation:
 - Calendar day DTE decay math: elapsed_days = (exit_time - entry_time).total_seconds() / 86400.0.
 - Implied volatility sigma extraction from signals and historical bar hv_20.
 - Delta strike solver for ATM / OTM option contracts.
-- Variable transaction cost model: 50.0 + 0.0010 * trade_turnover.
+- Variable transaction cost model: flat brokerage plus ad-valorem STT / exchange /
+  GST / stamp-duty components (see calculate_fno_transaction_cost).
 """
 
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Tuple, Union
 import pandas as pd
-import numpy as np
 
 from src.strategies.base_strategy import BaseStrategy, Signal
 from src.backtester.trade import Trade
@@ -35,6 +35,9 @@ def calculate_fno_transaction_cost(
     - Exchange Txn Charges: 0.05% on total turnover ((entry_premium + exit_premium) * quantity * 0.0005)
     - GST: 18% on (Brokerage + Exchange charges)
     - Stamp Duty: 0.003% on buy turnover (entry_premium * quantity * 0.00003)
+
+    ``is_option`` is retained for API compatibility (equity vs. derivative fee
+    schedules); the current friction model applies uniformly to both.
     """
     brokerage = 40.0
     stt = exit_premium * quantity * 0.001
@@ -43,6 +46,38 @@ def calculate_fno_transaction_cost(
     stamp_duty = entry_premium * quantity * 0.00003
     total_costs = brokerage + stt + exchange_txn + gst + stamp_duty
     return round(total_costs, 2)
+
+
+def _empty_result(final_capital: float) -> Dict[str, Any]:
+    """Standard empty simulation payload (no executable data -> no trades)."""
+    return {
+        "metrics": {
+            "total_trades": 0,
+            "winning_trades": 0,
+            "win_rate": 0.0,
+            "total_pnl": 0.0,
+            "final_capital": final_capital,
+        },
+        "trades": [],
+    }
+
+
+def _compute_pnl(
+    action: str, entry_px: float, exit_px: float, quantity: int
+) -> Tuple[float, float]:
+    """
+    Compute (raw_pnl, pnl_percent) for a closed BUY/SELL position.
+
+    pnl_percent is expressed on the per-unit entry-price basis; a non-positive
+    entry price yields 0.0 to guard against division by zero.
+    """
+    if action == "SELL":
+        raw_pnl = (entry_px - exit_px) * quantity
+        pnl_pct = ((entry_px - exit_px) / entry_px) * 100.0 if entry_px > 0 else 0.0
+    else:
+        raw_pnl = (exit_px - entry_px) * quantity
+        pnl_pct = ((exit_px - entry_px) / entry_px) * 100.0 if entry_px > 0 else 0.0
+    return raw_pnl, pnl_pct
 
 
 def _get_sigma(row: pd.Series, metadata: Optional[Dict[str, Any]] = None) -> float:
@@ -98,7 +133,6 @@ class PortfolioEngine:
         """
         symbol = pos["symbol"]
         entry_time = pos["entry_time"]
-        entry_idx = pos["entry_idx"]
         entry_price_or_premium = pos["entry_price_or_premium"]
         stop_loss = pos["stop_loss"]
         target_price = pos["target_price"]
@@ -117,10 +151,9 @@ class PortfolioEngine:
         if not sub_indices and not force_close:
             return None
 
+        # exit_bar_idx / exit_time / trigger_price are assigned on every path that
+        # reaches their read sites: inside the scan loop below or the force-close block.
         exit_found = False
-        exit_time = current_time
-        exit_bar_idx = sub_indices[-1] if sub_indices else entry_idx
-        trigger_price = float(df.iloc[exit_bar_idx]["close"])
 
         for i in sub_indices:
             bar = df.iloc[i]
@@ -186,39 +219,14 @@ class PortfolioEngine:
                 opt_type, S=trigger_price, K=strike, days_to_expiry=dte, sigma=exit_sigma
             )
             exit_price_or_premium = round(exit_premium, 2)
-
-            if action == "SELL":
-                raw_pnl = (entry_price_or_premium - exit_price_or_premium) * quantity
-                pnl_pct = (
-                    ((entry_price_or_premium - exit_price_or_premium) / entry_price_or_premium) * 100.0
-                    if entry_price_or_premium > 0
-                    else 0.0
-                )
-            else:
-                raw_pnl = (exit_price_or_premium - entry_price_or_premium) * quantity
-                pnl_pct = (
-                    ((exit_price_or_premium - entry_price_or_premium) / entry_price_or_premium) * 100.0
-                    if entry_price_or_premium > 0
-                    else 0.0
-                )
             trade_type = "OPTION"
         else:
             exit_price_or_premium = trigger_price
-            if action == "SELL":
-                raw_pnl = (entry_price_or_premium - exit_price_or_premium) * quantity
-                pnl_pct = (
-                    ((entry_price_or_premium - exit_price_or_premium) / entry_price_or_premium) * 100.0
-                    if entry_price_or_premium > 0
-                    else 0.0
-                )
-            else:
-                raw_pnl = (exit_price_or_premium - entry_price_or_premium) * quantity
-                pnl_pct = (
-                    ((exit_price_or_premium - entry_price_or_premium) / entry_price_or_premium) * 100.0
-                    if entry_price_or_premium > 0
-                    else 0.0
-                )
             trade_type = "STOCK"
+
+        raw_pnl, pnl_pct = _compute_pnl(
+            action, entry_price_or_premium, exit_price_or_premium, quantity
+        )
 
         # Realistic Indian F&O Transaction Costs
         total_cost = calculate_fno_transaction_cost(
@@ -274,16 +282,7 @@ class PortfolioEngine:
         # Handle single DataFrame input for backward compatibility
         if isinstance(stock_dfs, pd.DataFrame):
             if stock_dfs.empty:
-                return {
-                    "metrics": {
-                        "total_trades": 0,
-                        "winning_trades": 0,
-                        "win_rate": 0.0,
-                        "total_pnl": 0.0,
-                        "final_capital": self.initial_capital,
-                    },
-                    "trades": [],
-                }
+                return _empty_result(self.initial_capital)
             sym = (
                 str(stock_dfs["symbol"].iloc[0])
                 if "symbol" in stock_dfs.columns
@@ -292,16 +291,7 @@ class PortfolioEngine:
             stock_dfs = {sym: stock_dfs}
 
         if not stock_dfs:
-            return {
-                "metrics": {
-                    "total_trades": 0,
-                    "winning_trades": 0,
-                    "win_rate": 0.0,
-                    "total_pnl": 0.0,
-                    "final_capital": self.initial_capital,
-                },
-                "trades": [],
-            }
+            return _empty_result(self.initial_capital)
 
         # 1. Gather & Filter Signals across all stocks if not provided
         if signals is None:
@@ -318,7 +308,7 @@ class PortfolioEngine:
         # Sort ALL signals chronologically by timestamp
         signals = sorted(signals, key=lambda s: pd.Timestamp(s.timestamp))
 
-        cash = self.initial_capital
+        cash: float = self.initial_capital
         open_positions: List[Dict[str, Any]] = []
         closed_trades: List[Trade] = []
 
@@ -363,6 +353,17 @@ class PortfolioEngine:
                 float(signal.entry_price) if signal.entry_price is not None else entry_spot
             )
 
+            # Shared stop/target resolution for both option and stock legs
+            if signal.stop_loss is None or signal.target_price is None:
+                stop_loss, target_price = self.risk_manager.calculate_stop_and_target(
+                    entry_price, action
+                )
+            else:
+                stop_loss = float(signal.stop_loss)
+                target_price = float(signal.target_price)
+
+            is_bullish = target_price > entry_spot
+
             is_option = signal.metadata.get("type") == "OPTION"
             if is_option:
                 opt_type = signal.metadata.get("option_type")
@@ -374,16 +375,6 @@ class PortfolioEngine:
                 strike = find_strike_for_delta(
                     opt_type, entry_spot, target_delta, days_to_expiry=30.0, sigma=sigma
                 )
-
-                if signal.stop_loss is None or signal.target_price is None:
-                    stop_loss, target_price = (
-                        self.risk_manager.calculate_stop_and_target(entry_price, action)
-                    )
-                else:
-                    stop_loss = float(signal.stop_loss)
-                    target_price = float(signal.target_price)
-
-                is_bullish = target_price > entry_spot
 
                 entry_premium = calculate_option_price(
                     opt_type, S=entry_spot, K=strike, days_to_expiry=30.0, sigma=sigma
@@ -408,16 +399,6 @@ class PortfolioEngine:
                 entry_price_or_premium = entry_premium
                 trade_lot_size = self.lot_size
             else:
-                if signal.stop_loss is None or signal.target_price is None:
-                    stop_loss, target_price = (
-                        self.risk_manager.calculate_stop_and_target(entry_price, action)
-                    )
-                else:
-                    stop_loss = float(signal.stop_loss)
-                    target_price = float(signal.target_price)
-
-                is_bullish = target_price > entry_spot
-
                 quantity = self.risk_manager.calculate_position_size(
                     entry_price=entry_price, stop_loss=stop_loss, lot_size=1
                 )

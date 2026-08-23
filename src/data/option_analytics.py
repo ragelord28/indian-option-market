@@ -125,7 +125,7 @@ def snap_to_strike_grid(spot: float, strike_step: float | None = None, symbol: s
                     strike_step = round(valid_strikes[1] - valid_strikes[0], 2)
 
     # Fallback if symbol is unspecified or spot out of range
-    if strike_step is None:
+    if strike_step is None or strike_step <= 0:
         strike_step = get_strike_step(spot, symbol=symbol)
     return round(round(spot / strike_step) * strike_step, 2)
 
@@ -458,13 +458,15 @@ def get_best_strike(
     liquidity_warning = spread_pct > 4.0
     vrp_val = calculate_vrp(iv, hv_20)
 
-    # Non-linear Black-Scholes target pricing (captures Gamma expansion)
+    # Non-linear Black-Scholes target pricing (captures Gamma expansion).
+    # Fall back to current spot when no technical target is supplied.
+    effective_target = underlying_target if (underlying_target is not None and underlying_target > 0) else spot_price
     iv_decimal = iv / 100.0 if iv > 1.0 else iv
     dte = float(get_days_to_monthly_expiry())
     flag = 'c' if is_bullish else 'p'
     target_premium = calculate_option_price(
         flag=flag,
-        S=underlying_target,
+        S=effective_target,
         K=strike,
         days_to_expiry=dte,
         r=0.07,
@@ -489,7 +491,7 @@ def get_best_strike(
         "capital": capital_required,
         "option_target_price": option_target_price,
         "underlying_spot": round(spot_price, 2),
-        "underlying_target": round(underlying_target, 2),
+        "underlying_target": round(effective_target, 2),
         "vrp": round(vrp_val * 100.0, 1),
         "liquidity_warning": liquidity_warning,
         "spread_pct": spread_pct,

@@ -30,6 +30,14 @@ from src.scanner.eod_scanner import check_morning_gap_veto
 from src.data.strategy_builder import build_optimal_strategy
 
 
+def _atomic_json_write(filepath: Path, data: Any) -> None:
+    """Write JSON atomically via temp file + os.replace() to prevent partial writes."""
+    tmp_path = filepath.with_name(filepath.name + f".tmp{os.getpid()}")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(str(tmp_path), str(filepath))
+
+
 def is_market_session_active(dt: datetime | None = None) -> bool:
     """
     Check if current IST time is within live market hours (Mon-Fri after 09:15 AM IST).
@@ -144,12 +152,22 @@ def run_morning_radar(
             "sector_counts": {},
             "radar_items": [],
         }
-        with open(out_p, "w", encoding="utf-8") as f:
-            json.dump(empty_res, f, indent=2)
+        _atomic_json_write(out_p, empty_res)
         return empty_res
 
-    with open(w_path, "r", encoding="utf-8") as f:
-        wl_data = json.load(f)
+    try:
+        with open(w_path, "r", encoding="utf-8") as f:
+            wl_data = json.load(f)
+    except Exception as err:
+        print(f"⚠️ Corrupted watchlist {w_path} ({err}); writing empty radar state.")
+        empty_res = {
+            "timestamp": datetime.now().isoformat(),
+            "total_shortlisted": 0,
+            "sector_counts": {},
+            "radar_items": [],
+        }
+        _atomic_json_write(out_p, empty_res)
+        return empty_res
 
     # Flatten all categories into a single list sorted by conviction_score
     raw_items = []
@@ -362,8 +380,8 @@ def run_morning_radar(
         "radar_items": radar_items,
     }
 
-    with open(out_p, "w", encoding="utf-8") as f:
-        json.dump(output_data, f, indent=2)
+    # Atomic write to prevent partial/corrupted radar state on crash mid-write
+    _atomic_json_write(out_p, output_data)
 
     print(f"Morning Radar Complete! Processed {len(radar_items)} candidates into {out_p}.")
     return output_data

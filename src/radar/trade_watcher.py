@@ -31,8 +31,12 @@ DEFAULT_ACTIVE_TRADES_FILE = Path("data/paper/active_trades.json")
 
 
 def _atomic_json_write(filepath: Path, data: Any) -> None:
-    """Write JSON data atomically via temp file + os.replace()."""
-    tmp_path = filepath.with_suffix(".json.tmp")
+    """Write JSON atomically via temp file + os.replace().
+
+    The temp filename embeds the PID so concurrent writer processes
+    (dashboard thread + watcher cycle) never collide on the same tmp path.
+    """
+    tmp_path = filepath.with_name(filepath.name + f".tmp{os.getpid()}")
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     os.replace(str(tmp_path), str(filepath))
@@ -64,10 +68,18 @@ def monitor_active_trades(
         List of active alert dictionaries for trades requiring immediate action.
     """
     pos_path = Path(active_file)
-    if not pos_path.exists() or pos_path.stat().st_size == 0:
+    try:
+        has_positions = pos_path.exists() and pos_path.stat().st_size > 0
+    except OSError:
+        has_positions = False
+    if not has_positions:
         # Fallback check for active_trades.json
         alt_path = DEFAULT_ACTIVE_TRADES_FILE
-        if alt_path.exists() and alt_path.stat().st_size > 0:
+        try:
+            has_alt = alt_path.exists() and alt_path.stat().st_size > 0
+        except OSError:
+            has_alt = False
+        if has_alt:
             pos_path = alt_path
         else:
             return []
@@ -112,7 +124,7 @@ def monitor_active_trades(
     time_1330 = time(13, 30)
     time_1510 = time(15, 10)
 
-    alerts = []
+    alerts: List[Dict[str, Any]] = []
 
     for pos in positions:
         if pos.get("status") != "OPEN":

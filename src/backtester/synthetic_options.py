@@ -42,7 +42,7 @@ def calculate_option_price(
     Returns:
         Theoretical Black-Scholes option contract price / premium.
     """
-    if S <= 0 or K <= 0:
+    if S is None or K is None or S <= 0 or K <= 0:
         return 0.0
 
     t = days_to_expiry / 365.0
@@ -88,7 +88,7 @@ def calculate_option_delta(
     Returns:
         Delta value (+0.0 to +1.0 for Call, -1.0 to 0.0 for Put).
     """
-    if S <= 0 or K <= 0:
+    if S is None or K is None or S <= 0 or K <= 0:
         return 0.0
 
     t = days_to_expiry / 365.0

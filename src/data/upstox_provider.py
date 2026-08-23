@@ -9,7 +9,6 @@ ADR-005 schema validation and local Parquet disk caching.
 from pathlib import Path
 import os
 import logging
-from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import requests
@@ -315,7 +314,7 @@ class UpstoxProvider(BaseDataProvider):
         return validated_df
 
     def fetch_option_chain(
-        self, symbol: str, expiry_date: str = None
+        self, symbol: str, expiry_date: str | None = None
     ) -> pd.DataFrame:
         """
         Fetch Option Chain analytics (Strikes, Call/Put LTP, IV, Greeks, OI) from Upstox API v2.
@@ -473,7 +472,7 @@ class UpstoxProvider(BaseDataProvider):
         return results
 
 
-def fetch_live_quotes_batch(symbols: list[str], provider: UpstoxProvider = None) -> dict:
+def fetch_live_quotes_batch(symbols: list[str], provider: UpstoxProvider | None = None) -> dict:
     """Standalone module-level helper for fetching batch live quotes."""
     if provider is None:
         provider = UpstoxProvider()
@@ -491,7 +490,7 @@ def check_upstox_live_status() -> tuple[bool, str]:
     return False, "🔴 Upstox Disconnected (Using Fallback Feed)"
 
 
-def fetch_live_option_ltp(symbol: str, strike: float, option_type: str, provider: UpstoxProvider = None) -> float | None:
+def fetch_live_option_ltp(symbol: str, strike: float, option_type: str, provider: UpstoxProvider | None = None) -> float | None:
     """
     Query live option contract LTP from Upstox API v2 option chain or quote endpoint.
     If Upstox is offline or token expired, returns None (enabling calibrated Black-Scholes engine with true volatility).

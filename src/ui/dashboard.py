@@ -9,9 +9,8 @@ Features 5 Interactive Modules:
 5. Risk & Audit Trail (Live Capital Allocation & Audit Logs).
 """
 
-import os
 import json
-from datetime import datetime, time, date, timedelta
+from datetime import datetime, time
 from pathlib import Path
 import sys
 import numpy as np
@@ -27,21 +26,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data import (
-    UpstoxProvider,
     check_upstox_live_status,
-    calculate_pcr,
-    interpret_pcr,
-    calculate_vrp,
-    find_max_pain,
-    rank_strikes,
-    get_best_strike,
     build_optimal_strategy,
     build_naked_itm_ticket,
 )
 from src.data.upstox_auth import fetch_and_save_token, get_login_url
 from src.radar.morning_radar import run_morning_radar
-from src.radar.trade_watcher import monitor_active_trades
-from src.scanner.eod_scanner import run_eod_scanner, check_morning_gap_veto
+from src.radar.trade_watcher import monitor_active_trades, _atomic_json_write
+from src.scanner.eod_scanner import run_eod_scanner
 from src.scanner.universe import get_lot_size
 
 
@@ -91,32 +83,52 @@ def load_watchlist_data() -> dict:
                 should_run_eod = True
 
         if should_run_eod:
-            run_eod_scanner()
+            try:
+                run_eod_scanner()
+            except Exception as err:
+                print(f"⚠️ Auto D-1 scan failed (feed offline?): {err}")
 
         # 2. Live Market Session (09:30 AM to 15:30 PM): Auto-run run_morning_radar()
         is_live_hours = ("09:30" <= time_str <= "15:30") or is_market_session_active()
         if is_live_hours:
-            run_morning_radar()
+            try:
+                run_morning_radar()
+            except Exception as err:
+                print(f"⚠️ Auto morning radar failed (feed offline?): {err}")
 
         st.session_state.app_bootstrapped = True
 
     wl_path = Path("data/watchlists/watchlist_latest.json")
     if not wl_path.exists() or wl_path.stat().st_size == 0:
-        run_eod_scanner()
+        try:
+            run_eod_scanner()
+        except Exception as err:
+            print(f"⚠️ D-1 scan failed (feed offline?): {err}")
 
     wl_data = {}
     if wl_path.exists() and wl_path.stat().st_size > 0:
-        with open(wl_path, "r", encoding="utf-8") as f:
-            wl_data = json.load(f)
+        try:
+            with open(wl_path, "r", encoding="utf-8") as f:
+                wl_data = json.load(f)
+        except Exception as err:
+            print(f"⚠️ Corrupted watchlist cache, starting empty: {err}")
+            wl_data = {}
 
     radar_path = Path("data/radar/radar_latest.json")
     if not radar_path.exists() or radar_path.stat().st_size == 0:
-        run_morning_radar()
+        try:
+            run_morning_radar()
+        except Exception as err:
+            print(f"⚠️ Morning radar failed (feed offline?): {err}")
 
     radar_data = {}
     if radar_path.exists() and radar_path.stat().st_size > 0:
-        with open(radar_path, "r", encoding="utf-8") as f:
-            radar_data = json.load(f)
+        try:
+            with open(radar_path, "r", encoding="utf-8") as f:
+                radar_data = json.load(f)
+        except Exception as err:
+            print(f"⚠️ Corrupted radar cache, starting empty: {err}")
+            radar_data = {}
 
     radar_items = radar_data.get("radar_items", [])
 
@@ -218,6 +230,13 @@ if auto_refresh:
     st.markdown('<meta http-equiv="refresh" content="300">', unsafe_allow_html=True)
     st.sidebar.caption("⏱️ Auto-refresh active: 5m interval")
 
+# Global Paper Positions file paths (defined before any sidebar controls that write them)
+journal_dir = Path("data/paper")
+journal_dir.mkdir(parents=True, exist_ok=True)
+active_pos_file = journal_dir / "active_positions.json"
+active_trades_file = journal_dir / "active_trades.json"
+history_file = journal_dir / "trade_history.json"
+
 if st.sidebar.button("🧹 Clear All Alerts & Positions"):
     with open(active_pos_file, "w", encoding="utf-8") as f:
         json.dump([], f, indent=2)
@@ -247,13 +266,6 @@ data_payload = load_watchlist_data()
 wl_data = data_payload["watchlist_data"]
 radar_data = data_payload["radar_data"]
 radar_items = data_payload["radar_items"]
-
-# Global Paper Positions Setup & Auto-Refresh Toggle
-journal_dir = Path("data/paper")
-journal_dir.mkdir(parents=True, exist_ok=True)
-active_pos_file = journal_dir / "active_positions.json"
-active_trades_file = journal_dir / "active_trades.json"
-history_file = journal_dir / "trade_history.json"
 
 if "active_trades" not in st.session_state:
     target_load_file = active_pos_file if active_pos_file.exists() and active_pos_file.stat().st_size > 0 else (
@@ -312,7 +324,6 @@ if selected_tab == "📊 D-1 Command Center":
     with col2:
         if st.button("🌙 Run D-1 Nightly Scanner (Post 4:00 PM)", type="secondary"):
             with st.spinner("Scanning 158 F&O stocks with today's closing prices..."):
-                from src.scanner.eod_scanner import run_eod_scanner
                 run_eod_scanner()
                 st.success("D-1 Watchlist updated with today's market close!")
                 st.rerun()
@@ -376,16 +387,16 @@ if selected_tab == "📊 D-1 Command Center":
         item_autopsy = next((r for r in radar_items if r["symbol"] == sel_sym_autopsy), radar_items[0])
         with st.expander(f"📋 14-Factor Autopsy Report — {sel_sym_autopsy}", expanded=True):
             a1, a2, a3 = st.columns(3)
-            a1.write(f"1. **20-EMA / 50-EMA Stack**: ✅ Confirmed Alignment")
+            a1.write("1. **20-EMA / 50-EMA Stack**: ✅ Confirmed Alignment")
             a1.write(f"2. **14-ADX Trend Strength**: ✅ {item_autopsy.get('conviction_score', 85):.1f} Conviction")
-            a1.write(f"3. **14-RSI Momentum**: ✅ 58.4 (No Divergence)")
-            a1.write(f"4. **12-ROC Rate of Change**: ✅ +2.4%")
+            a1.write("3. **14-RSI Momentum**: ✅ 58.4 (No Divergence)")
+            a1.write("4. **12-ROC Rate of Change**: ✅ +2.4%")
             a1.write(f"5. **14-ATR Volatility Range**: ✅ ₹{item_autopsy['close']*0.02:.2f}")
 
             a2.write(f"6. **20-HV Realized Volatility**: ✅ {item_autopsy.get('hv_20', 22.4):.1f}%")
             a2.write(f"7. **VRP (IV - HV)**: ✅ {item_autopsy.get('vrp', 2.5):+.1f}%")
             a2.write(f"8. **Sector Concentration**: {'✅ Pass (Max 1)' if item_autopsy['status'] != 'VETOED_SECTOR_LIMIT' else '❌ Vetoed (Sector Limit)'}")
-            a2.write(f"9. **Event Blackout Check**: ✅ Pass (No Earnings < 48h)")
+            a2.write("9. **Event Blackout Check**: ✅ Pass (No Earnings < 48h)")
             a2.write(f"10. **09:15 Opening Gap**: {'✅ Pass' if item_autopsy['status'] != 'VETOED_GAP' else '❌ Vetoed (Gap > 1.5x ATR)'}")
 
             status = item_autopsy.get("status", "AWAITING_ORB")
@@ -399,9 +410,9 @@ if selected_tab == "📊 D-1 Command Center":
                 orb_str = "🟡 Awaiting Breakout"
 
             a3.write(f"11. **Option Liquidity Spread**: ✅ Grade {item_autopsy.get('execution_ticket', {}).get('liquidity_grade', 'A')}")
-            a3.write(f"12. **PCR Support/Resistance**: ✅ 1.18 (Bullish)")
+            a3.write("12. **PCR Support/Resistance**: ✅ 1.18 (Bullish)")
             a3.write(f"13. **09:30 ORB Breakout**: {orb_str}")
-            a3.write(f"14. **Slippage Drag Threshold**: ✅ Pass (< 20%)")
+            a3.write("14. **Slippage Drag Threshold**: ✅ Pass (< 20%)")
 
 # -----------------------------------------------------------------------------
 # TAB 2: Strategy Desk & Execution Ticket
@@ -628,12 +639,9 @@ elif selected_tab == "⚡ Strategy Desk & Execution Ticket":
             }
             active_trades.append(new_trd)
             st.session_state.active_trades = active_trades
-            with open(active_pos_file, "w", encoding="utf-8") as f:
-                json.dump(active_trades, f, indent=2)
-            with open(active_trades_file, "w", encoding="utf-8") as f:
-                json.dump(active_trades, f, indent=2)
+            _atomic_json_write(active_pos_file, active_trades)
+            _atomic_json_write(active_trades_file, active_trades)
             st.success(f"Successfully logged Trade {new_trd['trade_id']} ({selected_symbol} - {new_trd['strategy']}) to Journal!")
-            st.rerun()
             st.rerun()
 
 # -----------------------------------------------------------------------------
@@ -708,10 +716,8 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
                     }
                     active_trades.append(new_trd)
                     st.session_state.active_trades = active_trades
-                    with open(active_pos_file, "w", encoding="utf-8") as f:
-                        json.dump(active_trades, f, indent=2)
-                    with open(active_trades_file, "w", encoding="utf-8") as f:
-                        json.dump(active_trades, f, indent=2)
+                    _atomic_json_write(active_pos_file, active_trades)
+                    _atomic_json_write(active_trades_file, active_trades)
 
                     st.success(f"Logged Trade {new_trd['trade_id']} for {new_trd['symbol']}!")
                     st.rerun()
@@ -763,19 +769,13 @@ elif selected_tab == "💼 Live Trade Journal & Capital Tracker":
                                 except Exception:
                                     history = []
                             history.append(pos_copy)
-                            with open(hist_file, "w", encoding="utf-8") as f:
-                                json.dump(history, f, indent=2)
+                            _atomic_json_write(hist_file, history)
 
                             active_trades = [t for t in active_trades if t.get("trade_id") != pos["trade_id"]]
                             st.session_state.active_trades = active_trades
 
-                            active_pos_file = Path("data/paper/active_positions.json")
-                            active_trades_file = Path("data/paper/active_trades.json")
-                            active_pos_file.parent.mkdir(parents=True, exist_ok=True)
-                            with open(active_pos_file, "w", encoding="utf-8") as f:
-                                json.dump(active_trades, f, indent=2)
-                            with open(active_trades_file, "w", encoding="utf-8") as f:
-                                json.dump(active_trades, f, indent=2)
+                            _atomic_json_write(active_pos_file, active_trades)
+                            _atomic_json_write(active_trades_file, active_trades)
 
                             st.success(f"Trade {pos['trade_id']} ({pos['symbol']}) closed! Realized P&L: ₹{realized_pnl:,.2f}")
                             st.rerun()

@@ -25,9 +25,12 @@ def calculate_position_size(
         lot_size: Minimum trading lot size increment.
 
     Returns:
-        Position size (units) rounded down to lot_size. Returns 0 if risk budget < 1 lot.
+        Position size (units) rounded down to lot_size. Returns 0 if the risk budget
+        covers less than 1 lot or inputs are invalid (non-positive lot_size included).
     """
     if entry_price <= 0 or abs(entry_price - stop_loss) <= 0:
+        return 0
+    if lot_size <= 0:  # guard: floor-division sizing below would raise ZeroDivisionError
         return 0
 
     pct = risk_per_trade_pct / 100.0 if risk_per_trade_pct > 1.0 else risk_per_trade_pct
@@ -66,9 +69,9 @@ class RiskManager:
             max_risk_per_trade_pct: Maximum capital risk per trade as decimal (default 0.02 = 2%).
             risk_reward_ratio: Reward-to-Risk multiplier for target price (default 2.0).
         """
-        self.account_capital = account_capital
-        self.max_risk_per_trade_pct = max_risk_per_trade_pct
-        self.risk_reward_ratio = risk_reward_ratio
+        self.account_capital: float = account_capital
+        self.max_risk_per_trade_pct: float = max_risk_per_trade_pct
+        self.risk_reward_ratio: float = risk_reward_ratio
 
     def calculate_stop_and_target(
         self, entry_price: float, action: str, atr: Optional[float] = None

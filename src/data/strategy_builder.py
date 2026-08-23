@@ -18,7 +18,6 @@ from src.backtester.engine import calculate_fno_transaction_cost
 from src.data.option_analytics import (
     get_days_to_monthly_expiry,
     get_monthly_expiry_date,
-    get_strike_step,
     snap_to_strike_grid,
     get_adjacent_exchange_strikes,
 )
@@ -82,10 +81,14 @@ def _build_ticket_from_legs(
     lot_size: int = 50,
 ) -> Dict[str, Any]:
     """Helper to process leg list and return full strategy ticket dictionary."""
-    processed_legs = []
+    if lot_size <= 0:
+        # Guard: breakeven math below divides net_cost_abs by lot_size.
+        raise ValueError(f"lot_size must be positive, got {lot_size}")
+
+    processed_legs: List[Dict[str, Any]] = []
     total_mid_cost = 0.0
     total_slippage_cost = 0.0
-    spread_pcts = []
+    spread_pcts: List[float] = []
 
     net_delta = 0.0
     net_theta = 0.0
@@ -133,7 +136,8 @@ def _build_ticket_from_legs(
         entry_ltp_final = mid_ltp if mid_ltp > 0 else p_entry_calc
 
         # d1, d2 for Black-Scholes
-        if strike > 0 and sigma > 0:
+        # spot/strike > 0 guards log(); sigma, sqrt_T > 0 guards the d1 denominator.
+        if spot_price > 0 and strike > 0 and sigma > 0:
             d1 = (np.log(spot_price / strike) + (r_rate + 0.5 * sigma**2) * T) / (sigma * sqrt_T)
             d2 = d1 - sigma * sqrt_T
             from scipy.stats import norm
@@ -218,7 +222,7 @@ def _build_ticket_from_legs(
     is_debit = total_mid_cost > 0
     net_cost_abs = abs(total_mid_cost)
 
-    strikes_list = [l["Strike"] for l in processed_legs]
+    strikes_list: List[float] = [leg["Strike"] for leg in processed_legs]
     min_strike = min(strikes_list)
     max_strike = max(strikes_list)
     spread_width = abs(max_strike - min_strike) if len(strikes_list) > 1 else 50.0
@@ -266,9 +270,9 @@ def _build_ticket_from_legs(
 
     # Payoff Curve
     spot_range = np.linspace(spot_price * 0.90, spot_price * 1.10, 50)
-    payoff_expiry = []
-    payoff_t0 = []
-    payoff_tmid = []
+    payoff_expiry: List[float] = []
+    payoff_t0: List[float] = []
+    payoff_tmid: List[float] = []
 
     for S in spot_range:
         exp_pnl = 0.0
