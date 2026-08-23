@@ -8,16 +8,27 @@ headless daemon:
   CLI:     python -m src.api.hermes_bridge <command> [--json]
   Daemon:  python -m src.api.hermes_bridge daemon --interval 300
 
-Core contract — ANTI-SPAM DIFF POLLING:
-    Every poll function compares the current market state against the
-    persistent tracker at `data/radar/alert_state_tracker.json` and returns
-    ONLY genuine state changes:
+Core contract — ANTI-SPAM DIFF POLLING (BACKGROUND HOOKS ONLY):
+    The poll functions compare current market state against the persistent
+    tracker at `data/radar/alert_state_tracker.json` and return ONLY genuine
+    state changes:
       - AWAITING_ORB -> TRIGGERED breakout transitions (locked trigger time)
       - Trailing SL ratcheted to a new price level (1.2x ATR standard)
       - TARGET_HIT / SL_HIT (with gap slippage) / EOD_EXIT square-off
     Unchanged polling ticks return {"has_updates": false, "events": []}.
     The tracker is updated atomically (tmp file + os.replace) so concurrent
     dashboard / daemon writers never corrupt each other.
+
+INTERACTIVE vs BACKGROUND — never suppress a user's explicit ask:
+    check_system_status() and get_premarket_shortlist() are INTERACTIVE
+    endpoints: they ALWAYS return the complete human-readable payload (auth
+    status, market phase, full shortlist tables) regardless of whether
+    anything changed since the last poll. Diff suppression applies ONLY to
+    the automated background hooks (poll_actionable_triggers_diff /
+    poll_active_positions_diff) so the dispatcher stays silent between state
+    transitions. When a user in Buzz asks "check status" or "show the
+    shortlist", the agent must render the full table from the interactive
+    endpoints — an empty diff is never a valid answer to a direct question.
 
 Sleep & recovery: all network access is guarded; after laptop sleep the next
 daemon tick re-polls the live state (SL/target/EOD checks are evaluated
@@ -120,10 +131,12 @@ def check_system_status(
     watchlist_path: Path = WATCHLIST_FILE,
 ) -> Dict[str, Any]:
     """
-    Validate Upstox auth, market phase, and D-1 watchlist freshness.
+    INTERACTIVE endpoint — validate Upstox auth, market phase, D-1 freshness.
 
-    Returns auth status (AUTHENTICATED / TOKEN_EXPIRED with 1-click login URL),
-    current IST market phase, and whether the D-1 watchlist was generated today.
+    Always returns the FULL payload (never diff-suppressed): auth status
+    (AUTHENTICATED / TOKEN_EXPIRED with 1-click login URL), current IST
+    market phase, and whether the D-1 watchlist was generated today. Safe to
+    call on every direct user query.
     """
     now_ist = _now_ist(now_dt)
 
@@ -193,6 +206,14 @@ def _shortlist_row(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _fmt_rupee(value: Any) -> str:
+    """Format ₹ levels defensively — missing/partial data renders as '—'."""
+    try:
+        return f"₹{float(value):,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def _markdown_table(rows: List[Dict[str, Any]]) -> str:
     """Render shortlist rows as a GitHub-flavored Markdown table for Buzz."""
     if not rows:
@@ -201,9 +222,10 @@ def _markdown_table(rows: List[Dict[str, Any]]) -> str:
     lines = ["| " + " | ".join(headers) + " |", "|" + "---|" * len(headers)]
     for r in rows:
         lines.append(
-            f"| {r.get('symbol')} | {r.get('conviction_score')} | ₹{r.get('close'):,.2f} "
-            f"| ₹{r.get('entry'):,.2f} | ₹{r.get('stop_loss'):,.2f} | ₹{r.get('target'):,.2f} "
-            f"| {r.get('atr_14')} | {r.get('hv_20')} |"
+            f"| {r.get('symbol', '—')} | {r.get('conviction_score', '—')} "
+            f"| {_fmt_rupee(r.get('close'))} | {_fmt_rupee(r.get('entry'))} "
+            f"| {_fmt_rupee(r.get('stop_loss'))} | {_fmt_rupee(r.get('target'))} "
+            f"| {r.get('atr_14', '—')} | {r.get('hv_20', '—')} |"
         )
     return "\n".join(lines)
 
@@ -213,10 +235,13 @@ def get_premarket_shortlist(
     force_scan: bool = False,
 ) -> Dict[str, Any]:
     """
-    Verify/execute the D-1 EOD scan and format the pre-market shortlist for Buzz.
+    INTERACTIVE endpoint — verify/execute the D-1 EOD scan and format the
+    complete pre-market shortlist for Buzz.
 
-    Categories: Top Bullish, Top Bearish, Volatility Harvest — each with Autopsy
-    conviction score, ATR, and trigger levels.
+    ALWAYS returns the full payload with Top Bullish, Top Bearish, and
+    Volatility Harvest candidates (Autopsy conviction, ATR, trigger levels)
+    plus a ready-to-render Markdown table — regardless of whether anything
+    changed since the last poll. Never suppress on a user's explicit ask.
     """
     wl_path = Path(watchlist_path)
     wl: Dict[str, Any] = _load_json(wl_path, {})
@@ -298,12 +323,16 @@ def poll_actionable_triggers_diff(
     force_session_evaluation: bool = False,
 ) -> Dict[str, Any]:
     """
-    Run the Morning Radar and return ONLY newly triggered breakouts.
+    BACKGROUND polling hook — run the Morning Radar and return ONLY newly
+    triggered breakouts (anti-spam diff).
+
+    Intended for the automated dispatcher/cron; identical repeat polls return
+    an empty delta. For interactive user queries about the current shortlist,
+    call get_premarket_shortlist() instead (always full payload).
 
     Each event carries Symbol, Bias, locked Trigger Time, Spot, exchange
     contract, Entry LTP, Target/SL premiums (0.65-delta anchored), and lot size.
-    The tracker is updated atomically; identical repeat polls return
-    {"has_updates": false, "events": []}.
+    The tracker is updated atomically.
     """
     now_ist = _now_ist(now_dt)
     today_str = now_ist.strftime("%Y-%m-%d")
@@ -593,11 +622,17 @@ def poll_active_positions_diff(
     now_dt_override: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
-    Monitor active positions and return ONLY new actionable alerts.
+    BACKGROUND polling hook — monitor active positions and return ONLY new
+    actionable alerts (anti-spam diff).
 
-    Deduplicates repeated monitor_active_trades() emissions (e.g. EOD_EXIT
-    firing every tick 15:10–15:30) and emits a discrete SL_RATCHET event when
-    the trailing stop locks in a new price level.
+    Intended for the automated dispatcher/cron; repeated identical states are
+    suppressed (e.g. EOD_EXIT fires once, not every tick 15:10-15:30). For an
+    interactive "how are my positions doing?" query, read the positions file
+    directly or call monitor_active_trades() — never answer a user question
+    with an empty diff.
+
+    Also emits a discrete SL_RATCHET event when the trailing stop locks in a
+    new price level.
     """
     now_ist = _now_ist(now_dt_override)
 

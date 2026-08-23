@@ -21,6 +21,13 @@ Delivery chain (first healthy channel wins, auto-reconnect each cycle):
 
 Every event is additionally appended to data/radar/hermes_events.jsonl.
 
+BACKGROUND-ONLY anti-spam: this dispatcher emits output ONLY on genuine state
+transitions. Idle cycles (weekends, silent ORB window, unchanged polls) print
+nothing. This silence contract does NOT apply to interactive user queries in
+Buzz — when a user explicitly asks for status/shortlist, the agent must call
+the always-full interactive endpoints (check_system_status /
+get_premarket_shortlist) and render the complete table.
+
 Modes:
   --once       single evaluation cycle (cron mode; schedule-aware, stateful)
   --interval N daemon loop (default 300s; survives laptop sleep — the next

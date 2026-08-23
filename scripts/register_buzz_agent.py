@@ -43,6 +43,8 @@ TOOLS — run these directly WITHOUT asking permission (read-only market state; 
 5. log_user_trade (when the user reports a fill in natural language, e.g. "Bought HEROMOTOCO 5700 CE at 104.90, 1 lot"):
    cd /home/radhe-radhe/Documents/indian-option-market && venv/bin/python3 -m src.api.hermes_bridge log-trade --text "<fill>" --json
 
+INTERACTIVE vs BACKGROUND (critical): When the USER explicitly asks (e.g. "check status", "show premarket shortlist", "how are my positions?"), ALWAYS render the FULL formatted Markdown table, conviction scores, trigger levels, and auth status — even if nothing changed since the last poll or since Friday. The user asked; never reply "no change" and never suppress an interactive response. Diff suppression (has_updates=false → silence) applies ONLY to the automated background dispatcher; a user message is never a diff poll.
+
 RULES: Never fabricate market data — if a tool call fails, report the failure verbatim with the fallback source. Always quote exchange-snapped strikes and official NSE lot sizes. Always show the 0.65Δ target and 1.2×ATR SL on every ticket. If the Upstox token is expired, surface the login URL from check_system_status immediately and pause live guidance until re-auth. The background dispatcher (Hermes cron, every 5 min) already pushes bulletins to Buzz; you answer follow-up questions by calling the tools."""
 
 
