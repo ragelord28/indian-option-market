@@ -47,6 +47,8 @@ RULES: Never fabricate market data — if a tool call fails, report the failure 
 
 
 def build_entry() -> dict:
+    """Definition entry (slug acts as the persona ID; the app pairs it with a
+    runtime instance entry carrying persona_id + provisioned pubkey)."""
     now = datetime.now(timezone.utc).isoformat()
     return {
         "pubkey": "",
@@ -65,7 +67,12 @@ def build_entry() -> dict:
         "max_turn_duration_seconds": None,
         "parallelism": 10,
         "system_prompt": SYSTEM_PROMPT,
-        "model": "anthropic/claude-3.5-haiku",
+        # Buzz exposes a CURATED model ID space (see global-agent-config.json),
+        # not raw OpenRouter slugs. 'openrouter/free' is the machine default
+        # that all working agents resolve to; raw IDs like
+        # 'anthropic/claude-3.5-haiku' fail Buzz's dropdown validation with
+        # "The configured model is not available".
+        "model": "openrouter/free",
         "provider": "openrouter",
         "persona_source_version": None,
         "start_on_app_launch": True,
