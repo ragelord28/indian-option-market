@@ -20,6 +20,31 @@ from src.backtester.synthetic_options import calculate_option_price, find_strike
 from src.risk.risk_manager import RiskManager
 
 
+def calculate_fno_transaction_cost(
+    entry_premium: float,
+    exit_premium: float,
+    quantity: int,
+    is_option: bool = True
+) -> float:
+    """
+    Calculate realistic Indian F&O transaction cost friction.
+
+    Breakdown:
+    - Brokerage: ₹20 buy + ₹20 sell = ₹40.0
+    - STT: 0.1% on sell turnover (exit_premium * quantity * 0.001)
+    - Exchange Txn Charges: 0.05% on total turnover ((entry_premium + exit_premium) * quantity * 0.0005)
+    - GST: 18% on (Brokerage + Exchange charges)
+    - Stamp Duty: 0.003% on buy turnover (entry_premium * quantity * 0.00003)
+    """
+    brokerage = 40.0
+    stt = exit_premium * quantity * 0.001
+    exchange_txn = (entry_premium + exit_premium) * quantity * 0.0005
+    gst = (brokerage + exchange_txn) * 0.18
+    stamp_duty = entry_premium * quantity * 0.00003
+    total_costs = brokerage + stt + exchange_txn + gst + stamp_duty
+    return round(total_costs, 2)
+
+
 def _get_sigma(row: pd.Series, metadata: Optional[Dict[str, Any]] = None) -> float:
     """Extract hv_20 volatility from metadata or row, fallback to 0.20."""
     if metadata and "hv_20" in metadata and metadata["hv_20"] is not None:
@@ -195,9 +220,13 @@ class PortfolioEngine:
                 )
             trade_type = "STOCK"
 
-        # Realistic Variable Transaction Costs
-        total_turnover = (entry_price_or_premium + exit_price_or_premium) * quantity
-        total_cost = round(50.0 + (0.0010 * total_turnover), 2)
+        # Realistic Indian F&O Transaction Costs
+        total_cost = calculate_fno_transaction_cost(
+            entry_premium=entry_price_or_premium,
+            exit_premium=exit_price_or_premium,
+            quantity=quantity,
+            is_option=is_option,
+        )
         net_pnl = round(raw_pnl - total_cost, 2)
 
         trade = Trade(
@@ -331,12 +360,16 @@ class PortfolioEngine:
             # C. Sizing and Margin calculation
             sigma = _get_sigma(entry_row, signal.metadata)
             entry_price = (
-                float(signal.entry_price) if signal.entry_price else entry_spot
+                float(signal.entry_price) if signal.entry_price is not None else entry_spot
             )
 
             is_option = signal.metadata.get("type") == "OPTION"
             if is_option:
-                opt_type = signal.metadata.get("option_type", "c")
+                opt_type = signal.metadata.get("option_type")
+                if not opt_type:
+                    sig_type = str(signal.metadata.get("strategy_type", "")).upper()
+                    opt_type = "p" if ("PUT" in sig_type or "PE" in sig_type) else "c"
+                opt_type = str(opt_type).lower()
                 target_delta = signal.metadata.get("delta_target")
                 strike = find_strike_for_delta(
                     opt_type, entry_spot, target_delta, days_to_expiry=30.0, sigma=sigma

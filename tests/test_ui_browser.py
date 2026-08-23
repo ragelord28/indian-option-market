@@ -12,12 +12,23 @@ Tests:
 4. Assert all tables, greeks, payoff metrics, and tickets render cleanly without exception overlays or error tracebacks.
 """
 
+import socket
 import sys
 import time
 from pathlib import Path
+import pytest
 from playwright.sync_api import sync_playwright
 
 
+def is_port_open(host="localhost", port=8501):
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not is_port_open(), reason="Streamlit server not running on port 8501")
 def test_streamlit_ui_browser():
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path="/usr/bin/google-chrome", headless=True)

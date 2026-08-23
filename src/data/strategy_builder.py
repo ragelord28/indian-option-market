@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from src.backtester.synthetic_options import calculate_option_price
+from src.backtester.engine import calculate_fno_transaction_cost
 from src.data.option_analytics import (
     get_days_to_monthly_expiry,
     get_monthly_expiry_date,
@@ -310,17 +311,30 @@ def _build_ticket_from_legs(
     strike_main = primary_leg.get("Valid Strike", spot_price)
     opt_symbol_main = primary_leg.get("Option Contract", f"{symbol} OPT")
 
+    total_txn_cost = sum(
+        calculate_fno_transaction_cost(
+            entry_premium=leg.get("Option LTP / Entry (₹)", 0.0),
+            exit_premium=leg.get("Target Premium (₹)", 0.0),
+            quantity=lot_size,
+            is_option=True,
+        )
+        for leg in processed_legs
+    )
+
     return {
         "symbol": symbol,
         "strategy_name": strat_name,
         "rationale": rationale,
         "legs": processed_legs,
+        "spot_price": spot_price,
         "option_symbol": opt_symbol_main,
+        "option_type": primary_leg.get("Type", "CE"),
         "option_entry_limit": round(p_entry_main, 2),
         "option_target_exit": round(p_target_main, 2),
         "option_sl_exit": round(p_sl_main, 2),
         "max_profit_inr": round(max_profit, 2),
         "max_loss_inr": round(max_loss, 2),
+        "transaction_cost": round(total_txn_cost, 2),
         "strike": strike_main,
         "lot_size": lot_size,
         "net_debit_or_credit": "Net Debit" if is_debit else "Net Credit",

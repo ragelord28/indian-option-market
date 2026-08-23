@@ -178,3 +178,30 @@ def test_run_benchmark(mock_adr005_df: pd.DataFrame):
         assert "win_rate_pct" in metrics
         assert "total_pnl" in metrics
         assert "max_drawdown" in metrics
+
+
+def test_calculate_fno_transaction_cost_deduction():
+    """Verify Indian F&O transaction cost calculation and deduction from raw trade PnL."""
+    from src.backtester.engine import calculate_fno_transaction_cost
+
+    # Entry = 50.0, Exit = 70.0, Qty = 250 (1 lot)
+    # Brokerage: 40.0
+    # STT: 70 * 250 * 0.001 = 17.5
+    # Exchange Txn: (50 + 70) * 250 * 0.0005 = 15.0
+    # GST: (40 + 15) * 0.18 = 9.9
+    # Stamp Duty: 50 * 250 * 0.00003 = 0.375
+    # Total = 40.0 + 17.5 + 15.0 + 9.9 + 0.375 = 82.775 -> 82.78
+    cost = calculate_fno_transaction_cost(entry_premium=50.0, exit_premium=70.0, quantity=250, is_option=True)
+    assert cost == 82.78
+
+    raw_pnl = (70.0 - 50.0) * 250  # 5000.0
+    net_pnl = round(raw_pnl - cost, 2)
+    assert net_pnl == 4917.22
+
+
+def test_option_call_put_pricing_symmetry():
+    """Verify option call/put pricing symmetry for ATM options at equal distance from spot under zero interest rate."""
+    call_p = calculate_option_price("c", S=100.0, K=100.0, days_to_expiry=30.0, sigma=0.20, r=0.0)
+    put_p = calculate_option_price("p", S=100.0, K=100.0, days_to_expiry=30.0, sigma=0.20, r=0.0)
+    assert abs(call_p - put_p) < 1e-4
+

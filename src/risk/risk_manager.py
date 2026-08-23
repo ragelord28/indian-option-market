@@ -7,6 +7,46 @@ Defines RiskManager for position sizing, ATR/percentage stop-loss, and target pr
 from typing import Optional, Tuple
 
 
+def calculate_position_size(
+    account_capital: float,
+    risk_per_trade_pct: float,
+    entry_price: float,
+    stop_loss: float,
+    lot_size: int = 1,
+) -> int:
+    """
+    Calculate position sizing in units strictly enforcing risk budget.
+
+    Args:
+        account_capital: Total account capital.
+        risk_per_trade_pct: Max risk percentage (e.g. 2.0 for 2% or 0.02).
+        entry_price: Entry price per share/contract.
+        stop_loss: Stop-loss price per share/contract.
+        lot_size: Minimum trading lot size increment.
+
+    Returns:
+        Position size (units) rounded down to lot_size. Returns 0 if risk budget < 1 lot.
+    """
+    if entry_price <= 0 or abs(entry_price - stop_loss) <= 0:
+        return 0
+
+    pct = risk_per_trade_pct / 100.0 if risk_per_trade_pct > 1.0 else risk_per_trade_pct
+    max_risk_amount = account_capital * pct
+    risk_per_unit = abs(entry_price - stop_loss)
+
+    allowed_units = max_risk_amount / risk_per_unit
+    num_lots = int(allowed_units // lot_size)
+
+    # Cap notional value to account capital
+    max_notional_lots = int(account_capital // (lot_size * entry_price)) if (lot_size * entry_price) > 0 else 0
+    num_lots = min(num_lots, max_notional_lots)
+
+    if num_lots < 1:
+        return 0  # Strictly enforce risk budget: NEVER force 1 lot if capital budget is exceeded!
+
+    return num_lots * lot_size
+
+
 class RiskManager:
     """
     Manages trade position sizing, stop-loss calculation, and target pricing.
@@ -77,25 +117,16 @@ class RiskManager:
             lot_size: Minimum trading lot increment (default 1).
 
         Returns:
-            Position size rounded down to the nearest lot_size, respecting risk floor and notional capital cap.
+            Position size rounded down to nearest lot_size. Returns 0 if risk budget < 1 lot.
         """
-        risk_per_unit = abs(entry_price - stop_loss)
-
-        if entry_price <= 0 or risk_per_unit <= 0:
+        if entry_price <= 0 or abs(entry_price - stop_loss) <= 0:
             raise ValueError("Entry price and risk per unit must be > 0")
 
-        max_risk_amount = self.account_capital * self.max_risk_per_trade_pct
-        raw_shares = max_risk_amount / risk_per_unit
-        num_lots = int(raw_shares // lot_size)
+        return calculate_position_size(
+            account_capital=self.account_capital,
+            risk_per_trade_pct=self.max_risk_per_trade_pct,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            lot_size=lot_size,
+        )
 
-        # Fix 1 (The Floor): If num_lots == 0, return 0 (do not force a trade that breaches risk)
-        if num_lots == 0:
-            return 0
-
-        # Fix 2 (The Notional Cap): Ensure total notional value does not exceed account capital
-        notional_value = num_lots * lot_size * entry_price
-        while notional_value > self.account_capital and num_lots > 0:
-            num_lots -= 1
-            notional_value = num_lots * lot_size * entry_price
-
-        return num_lots * lot_size
