@@ -102,8 +102,10 @@ def check_buzz_agent() -> str:
     entry = next((a for a in agents if a.get("name") == "IND OPT MKT"), None)
     require(entry is not None, "IND OPT MKT not registered in Buzz")
     require(entry.get("provider") == "openrouter", f"provider={entry.get('provider')!r}")
-    # Buzz's curated model ID space: 'openrouter/free' (NOT raw OpenRouter slugs)
-    require(entry.get("model") == "openrouter/free", f"model={entry.get('model')!r}")
+    # Cost-optimized tiered routing: deepseek/deepseek-chat primary
+    # (fallbacks openrouter/auto -> gemini live in Hermes' chain; Buzz holds
+    # only the single primary string).
+    require(entry.get("model") == "deepseek/deepseek-chat", f"model={entry.get('model')!r}")
     require(entry.get("is_active") is True, "agent not active")
     require(entry.get("respond_to") == "owner-only", "agent not owner-only")
     require("hermes_bridge" in entry.get("system_prompt", ""), "system prompt lacks tool bindings")
