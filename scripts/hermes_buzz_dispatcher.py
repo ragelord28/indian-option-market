@@ -59,6 +59,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env", override=True)
+except Exception:
+    pass
+
 from src.api.hermes_bridge import (  # noqa: E402
     get_premarket_shortlist,
     poll_active_positions_diff,
@@ -127,7 +133,10 @@ def _buzz_cli() -> Optional[str]:
 
 
 def _buzz_channel(cli: str) -> Optional[str]:
-    """Auto-discover a Buzz channel UUID for message delivery."""
+    """Resolve Buzz channel UUID: honor BUZZ_CHANNEL_ID, then auto-discover."""
+    explicit = os.environ.get("BUZZ_CHANNEL_ID", "").strip()
+    if explicit:
+        return explicit
     try:
         out = subprocess.run(
             [cli, "--format", "compact", "channels", "list"],
