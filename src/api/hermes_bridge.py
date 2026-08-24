@@ -820,6 +820,7 @@ def _cli() -> int:
     sub.add_parser("status", parents=[json_parent], help="Upstox auth, market phase, watchlist freshness")
     sub.add_parser("premarket", parents=[json_parent], help="D-1 shortlist summary for Buzz")
     sub.add_parser("triggers", parents=[json_parent], help="Diff poll: newly triggered ORB breakouts only")
+    sub.add_parser("scan", parents=[json_parent], help="ORB scan: breakout triggers check")
     sub.add_parser("positions", parents=[json_parent], help="Diff poll: new actionable position alerts only")
 
     p_log = sub.add_parser("log-trade", parents=[json_parent], help="Log a user fill (NL text or explicit args)")
@@ -840,7 +841,7 @@ def _cli() -> int:
         out = check_system_status()
     elif args.command == "premarket":
         out = get_premarket_shortlist()
-    elif args.command == "triggers":
+    elif args.command in ("triggers", "scan"):
         out = poll_actionable_triggers_diff()
     elif args.command == "positions":
         out = poll_active_positions_diff()
