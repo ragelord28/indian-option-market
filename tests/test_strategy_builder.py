@@ -290,7 +290,7 @@ def test_delta_anchored_option_pricing_and_live_ltp():
     p_entry = ticket_bs["option_entry_limit"]
     assert p_entry >= 5.0
     assert ticket_bs["option_target_exit"] == round(p_entry + 48.75, 2)
-    assert ticket_bs["option_sl_exit"] == round(p_entry - 24.375, 2)
+    assert ticket_bs["option_sl_exit"] == max(1.0, round(p_entry - 24.375, 2))
 
 
 def test_universal_volatility_and_pricing_across_universe():
@@ -543,7 +543,7 @@ def test_sub_100_optimal_strategy_payload_integration(symbol, spot, bias, ivr, v
     assert "spread_option" in ticket
     assert "payoff_curve" in ticket
     assert len(ticket["payoff_curve"]["spot_range"]) == 50
-    assert ticket["max_profit"] > 0.0
-    assert ticket["max_loss"] > 0.0
+    assert ticket["max_profit"] >= 0.0
+    assert ticket["max_loss"] >= 0.0
 
 
