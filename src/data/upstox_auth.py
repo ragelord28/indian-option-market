@@ -3,7 +3,7 @@ Upstox API v2 OAuth 2.0 Authentication Manager.
 
 Provides 1-click OAuth authentication for Upstox API v2:
 1. Generates official authorization URL.
-2. Runs a lightweight local HTTP callback server listening on port 5000.
+2. Runs a lightweight local HTTP callback server listening on port 8501.
 3. Exchanges authorization code for an access_token.
 4. Persists UPSTOX_ACCESS_TOKEN securely into .env.
 """
@@ -35,7 +35,7 @@ def get_login_url(api_key: str = None, redirect_uri: str = None) -> str:
         Formatted OAuth authorization dialog URL string.
     """
     client_id = api_key or os.getenv("UPSTOX_API_KEY", "")
-    raw_redirect = redirect_uri or os.getenv("UPSTOX_REDIRECT_URI", "http://localhost:8501")
+    raw_redirect = redirect_uri or os.getenv("UPSTOX_REDIRECT_URI", "http://127.0.0.1:8501")
     redirect_target = raw_redirect.strip().rstrip("/")
 
     params = {
@@ -82,7 +82,7 @@ def fetch_and_save_token(
 
     client_id = api_key or os.getenv("UPSTOX_API_KEY", "")
     client_secret = api_secret or os.getenv("UPSTOX_API_SECRET", "")
-    raw_redirect = redirect_uri or os.getenv("UPSTOX_REDIRECT_URI", "http://localhost:8501")
+    raw_redirect = redirect_uri or os.getenv("UPSTOX_REDIRECT_URI", "http://127.0.0.1:8501")
     redirect_target = raw_redirect.strip().rstrip("/")
 
     if not client_id or not client_secret:
@@ -92,7 +92,9 @@ def fetch_and_save_token(
 
     headers = {
         "accept": "application/json",
+        "Api-Version": "2.0",
         "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     }
     payload = {
         "code": code_str,
@@ -126,7 +128,7 @@ def fetch_and_save_token(
     os.environ["UPSTOX_ACCESS_TOKEN"] = access_token
 
     import json
-    for token_path in [Path("data/tokens/upstox_token.json"), Path("data/upstox_token.json")]:
+    for token_path in [Path("data/cache/upstox_token.json"), Path("data/upstox_token.json")]:
         token_path.parent.mkdir(parents=True, exist_ok=True)
         with open(token_path, "w", encoding="utf-8") as f:
             json.dump({"access_token": access_token}, f, indent=2)
@@ -170,7 +172,7 @@ def run_auth_cli():
     """CLI runner for 1-Click Upstox Authentication."""
     load_dotenv(dotenv_path=ENV_PATH, override=True)
     api_key = os.getenv("UPSTOX_API_KEY", "")
-    redirect_uri = os.getenv("UPSTOX_REDIRECT_URI", "http://127.0.0.1:5000/callback")
+    redirect_uri = os.getenv("UPSTOX_REDIRECT_URI", "http://127.0.0.1:8501")
 
     if not api_key or api_key == "your_api_key_here":
         print("[ERROR] Please populate UPSTOX_API_KEY and UPSTOX_API_SECRET in .env first.")
@@ -182,11 +184,11 @@ def run_auth_cli():
     print("=" * 80)
     print("\nPlease open the following URL in your web browser to log in:")
     print(f"\n  {login_url}\n")
-    print("Waiting for browser redirect on port 5000...")
+    print("Waiting for browser redirect on port 8501...")
 
     # Parse port from redirect URI
     parsed_redirect = urlparse(redirect_uri)
-    port = parsed_redirect.port or 5000
+    port = parsed_redirect.port or 8501
 
     server = HTTPServer(("127.0.0.1", port), OAuthCallbackHandler)
     server.handle_request()  # Wait for single callback request

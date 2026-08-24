@@ -5,7 +5,7 @@ Hermes ⬄ Native Autonomous Trading-Day Dispatcher ("IND OPT MKT").
 Background runner that walks the IST trading-day schedule and pushes discrete
 Markdown bulletins into Native Desktop Notifications:
 
-  08:45 IST        D-1 pre-market shortlist table
+  09:00 IST        D-1 pre-market shortlist table
   09:15–09:29      SILENT — opening range forming, zero alerts
   09:30–15:10      every cycle: ORB trigger diffs + position diffs
                    (breakouts, 1.2×ATR SL ratchets, targets, SL breach with
@@ -78,8 +78,9 @@ FALLBACK_LOG = REPO / "data/logs/dispatcher.log"
 MARKET_OPEN_MIN = 9 * 60 + 15   # 09:15
 MARKET_LIVE_MIN = 9 * 60 + 30   # 09:30
 EOD_MIN = 15 * 60 + 10          # 15:10
+EOD_SCAN_MIN = 16 * 60          # 16:00
 MARKET_CLOSE_MIN = 15 * 60 + 30  # 15:30
-PREMARKET_PUSH_MIN = 8 * 60 + 45  # 08:45
+PREMARKET_PUSH_MIN = 9 * 60  # 09:00
 
 
 def now_ist() -> datetime:
@@ -234,7 +235,7 @@ def run_cycle(verbose: bool = True) -> Dict[str, Any]:
     mins = now.hour * 60 + now.minute
     state = _fresh_day_state(now)
 
-    # ---- 08:45–09:14 : pre-market shortlist (once per day) ----
+    # ---- 09:00–09:14 : pre-market shortlist (once per day) ----
     if PREMARKET_PUSH_MIN <= mins < MARKET_OPEN_MIN and not state.get("premarket_sent"):
         try:
             shortlist = get_premarket_shortlist()
@@ -277,6 +278,17 @@ def run_cycle(verbose: bool = True) -> Dict[str, Any]:
                 "immediately to avoid auto-square-off penalties and STT on expiry.",
             ))
             state["eod_sent"] = True
+
+    if EOD_SCAN_MIN <= mins and not state.get("evening_scan_sent"):
+        try:
+            from src.api.hermes_bridge import get_premarket_shortlist
+            # force scan generates the next day's list
+            get_premarket_shortlist(force_scan=True)
+            res = deliver("✅ 16:00 D-1 Evening Screening", "Next day watchlist generated successfully.")
+            results.append(res)
+            state["evening_scan_sent"] = True
+        except Exception as err:
+            results.append({"delivered_via": "error", "title": "16:00 Scan", "error": str(err)})
 
     state["cycles"] = int(state.get("cycles", 0)) + 1
     state["last_cycle_ist"] = now.strftime("%Y-%m-%d %H:%M:%S")
