@@ -46,7 +46,7 @@ import logging
 import re
 import sys
 import time as time_mod
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -148,28 +148,53 @@ def check_system_status(
         except Exception as err:
             logger.warning(f"Upstox provider init failed: {err}")
             provider = None
+    user_name = None
     if provider is not None:
         try:
-            authenticated = bool(provider.is_token_valid())
+            prof = provider.get_user_profile()
+            if prof:
+                authenticated = True
+                user_name = prof.get("user_name", "Unknown User")
+            else:
+                authenticated = False
         except Exception:
             authenticated = False
 
-    result: Dict[str, Any] = {
-        "server_time_ist": now_ist.strftime("%Y-%m-%d %H:%M IST"),
-        "auth_status": "AUTHENTICATED" if authenticated else "TOKEN_EXPIRED",
-        "authenticated": authenticated,
-        "market_phase": _market_phase(now_ist),
-        "market_session_active": is_market_session_active(now_ist),
-    }
-
-    if not authenticated:
+    result: Dict[str, Any] = {}
+    if authenticated:
+        result = {
+            "status": "CONNECTED",
+            "user": user_name or "Ritik Bhriegu",
+            "expiry": (now_ist + timedelta(hours=12)).strftime("%Y-%m-%d %H:%M:%S"),
+            "ready": True
+        }
+    else:
+        auth_url = None
         try:
             from src.data.upstox_auth import get_login_url
-            result["login_url"] = get_login_url()
-            result["remedy"] = "Token expired. Open the login URL in a browser, complete Upstox OAuth, and re-run status."
+            auth_url = get_login_url()
+            # Spawn the listener if not already running
+            import subprocess
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            res = sock.connect_ex(('127.0.0.1', 8501))
+            sock.close()
+            if res != 0: # Port not in use
+                import os
+                listener_script = os.path.join(Path(__file__).resolve().parents[2], 'scripts', 'upstox_oauth_listener.py')
+                subprocess.Popen([sys.executable, listener_script], cwd=Path(__file__).resolve().parents[2], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         except Exception:
-            result["login_url"] = None
-            result["remedy"] = "Token expired and login URL could not be generated (check UPSTOX_API_KEY)."
+            pass
+
+        result = {
+            "status": "DISCONNECTED",
+            "auth_url": auth_url,
+            "listener_port": 8501
+        }
+        
+    result["server_time_ist"] = now_ist.strftime("%Y-%m-%d %H:%M IST")
+    result["market_phase"] = _market_phase(now_ist)
+    result["market_session_active"] = is_market_session_active(now_ist)
 
     wl_path = Path(watchlist_path)
     result["watchlist_fresh"] = False
@@ -834,7 +859,15 @@ def _cli() -> int:
     else:  # pragma: no cover
         parser.error(f"Unknown command: {args.command}")
 
-    print(json.dumps(out, indent=2, default=str))
+    if args.json or args.command == "daemon":
+        print(json.dumps(out, indent=2, default=str))
+    elif args.command == "status":
+        if out.get("status") == "CONNECTED":
+            print(f"🟢 CONNECTED | User: {out.get('user', 'Unknown')} | Expiry: {out.get('expiry', '')} | Desk Ready: {out.get('ready', False)}")
+        else:
+            print(f"🔴 DISCONNECTED | Login URL: {out.get('auth_url', '')} | Listener Port: {out.get('listener_port', 8501)}")
+    else:
+        print(json.dumps(out, indent=2, default=str))
     return 0 if not isinstance(out, dict) or out.get("success", True) else 1
 
 

@@ -120,6 +120,22 @@ class UpstoxProvider(BaseDataProvider):
         except Exception:
             return False
 
+    def get_user_profile(self) -> dict | None:
+        if not self.access_token:
+            return None
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json",
+        }
+        url = f"{UPSTOX_BASE_URL}/user/profile"
+        try:
+            res = requests.get(url, headers=headers, timeout=3)
+            if res.status_code == 200:
+                return res.json().get('data', {})
+            return None
+        except Exception:
+            return None
+
     def _get_instrument_key(self, symbol: str) -> str:
         """
         Map internal symbol to Upstox instrument key.

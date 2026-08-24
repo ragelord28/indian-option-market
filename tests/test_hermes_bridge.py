@@ -39,6 +39,11 @@ class _MockProvider:
 
     def is_token_valid(self) -> bool:
         return self._valid
+        
+    def get_user_profile(self) -> dict | None:
+        if self._valid:
+            return {"user_name": "TEST USER"}
+        return None
 
 
 def test_check_system_status_authenticated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -51,8 +56,9 @@ def test_check_system_status_authenticated(tmp_path: Path, monkeypatch: pytest.M
 
     status = check_system_status(provider=_MockProvider(valid=True), now_dt=now_today, watchlist_path=wl)
 
-    assert status["auth_status"] == "AUTHENTICATED"
-    assert status["authenticated"] is True
+    assert status["status"] == "CONNECTED"
+    assert status["user"] == "TEST USER"
+    assert status["ready"] is True
     assert "login_url" not in status  # no nag when healthy
     assert status["market_phase"] in {"LIVE_TRADING", "EOD_SQUAREOFF", "CLOSED_WEEKEND"}
     assert status["watchlist_fresh"] is True  # tmp file mtime is today
@@ -65,10 +71,9 @@ def test_check_system_status_token_expired_returns_login_url(tmp_path: Path, mon
 
     status = check_system_status(provider=_MockProvider(valid=False), now_dt=MONDAY_1000, watchlist_path=wl)
 
-    assert status["auth_status"] == "TOKEN_EXPIRED"
-    assert status["authenticated"] is False
-    assert status["login_url"] == "https://login.upstox.com/authorize?x=1"
-    assert "remedy" in status
+    assert status["status"] == "DISCONNECTED"
+    assert status["auth_url"] == "https://login.upstox.com/authorize?x=1"
+    assert status["listener_port"] == 8501
 
 
 @pytest.mark.parametrize(
