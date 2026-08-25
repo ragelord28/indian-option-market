@@ -55,13 +55,14 @@ def test_check_system_status_authenticated(tmp_path: Path, monkeypatch: pytest.M
     now_today = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
 
     status = check_system_status(provider=_MockProvider(valid=True), now_dt=now_today, watchlist_path=wl)
+    res = status["result"]
 
-    assert status["status"] == "CONNECTED"
-    assert status["user"] == "TEST USER"
-    assert status["ready"] is True
-    assert "login_url" not in status  # no nag when healthy
-    assert status["market_phase"] in {"LIVE_TRADING", "EOD_SQUAREOFF", "CLOSED_WEEKEND"}
-    assert status["watchlist_fresh"] is True  # tmp file mtime is today
+    assert res["status"] == "CONNECTED"
+    assert res["user"] == "TEST USER"
+    assert res["ready"] is True
+    assert "login_url" not in res  # no nag when healthy
+    assert res["market_phase"] in {"LIVE_TRADING", "EOD_SQUAREOFF", "CLOSED_WEEKEND"}
+    assert res["watchlist_fresh"] is True  # tmp file mtime is today
 
 
 def test_check_system_status_token_expired_returns_login_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -70,10 +71,11 @@ def test_check_system_status_token_expired_returns_login_url(tmp_path: Path, mon
     wl.write_text(json.dumps({}), encoding="utf-8")
 
     status = check_system_status(provider=_MockProvider(valid=False), now_dt=MONDAY_1000, watchlist_path=wl)
+    res = status["result"]
 
-    assert status["status"] == "DISCONNECTED"
-    assert status["auth_url"] == "https://login.upstox.com/authorize?x=1"
-    assert status["listener_port"] == 8501
+    assert res["status"] == "DISCONNECTED"
+    assert res["auth_url"] == "https://login.upstox.com/authorize?x=1"
+    assert res["listener_port"] == 8501
 
 
 @pytest.mark.parametrize(
@@ -89,8 +91,9 @@ def test_check_system_status_token_expired_returns_login_url(tmp_path: Path, mon
 )
 def test_market_phase_lifecycle(tmp_path: Path, dt: datetime, expected_phase: str):
     status = check_system_status(provider=_MockProvider(valid=True), now_dt=dt, watchlist_path=tmp_path / "missing.json")
-    assert status["market_phase"] == expected_phase
-    assert status["watchlist_fresh"] is False  # missing watchlist
+    res = status["result"]
+    assert res["market_phase"] == expected_phase
+    assert res["watchlist_fresh"] is False  # missing watchlist
 
 
 # ---------------------------------------------------------------------------
@@ -106,14 +109,15 @@ def mock_watchlist(tmp_path: Path) -> Path:
         "top_bullish": [
             {"symbol": "RELIANCE", "regime": "Bullish Momentum", "sector": "Oil, Gas & Energy",
              "conviction_score": 91.5, "close": 2500.0, "entry": 2510.0, "stop_loss": 2460.0,
-             "target": 2600.0, "atr_14": 30.0, "hv_20": 22.4},
+             "target": 2600.0, "atr_14": 30.0, "hv_20": 22.4, "status": "WATCHING"},
         ],
         "top_bearish": [
             {"symbol": "TCS", "regime": "Bearish Momentum", "sector": "IT",
              "conviction_score": 88.0, "close": 4200.0, "entry": 4180.0, "stop_loss": 4260.0,
-             "target": 4050.0, "atr_14": 63.0, "hv_20": 19.1},
+             "target": 4050.0, "atr_14": 63.0, "hv_20": 19.1, "status": "WATCHING"},
         ],
         "top_volatility_harvest": [],
+        "vetoed_candidates": [],
     }
     path = tmp_path / "watchlist_latest.json"
     path.write_text(json.dumps(wl), encoding="utf-8")
@@ -122,17 +126,18 @@ def mock_watchlist(tmp_path: Path) -> Path:
 
 def test_get_premarket_shortlist_formats_for_buzz(mock_watchlist: Path):
     out = get_premarket_shortlist(watchlist_path=mock_watchlist)
+    res = out["result"]
 
-    assert out["total_candidates"] == 2
-    assert out["bullish"][0]["symbol"] == "RELIANCE"
-    assert out["bullish"][0]["conviction_score"] == 91.5
-    assert out["bearish"][0]["symbol"] == "TCS"
-    assert out["volatility_harvest"] == []
-    # Buzz markdown contract: header + per-category tables with ₹ levels
-    assert "📋 D-1 Pre-Market Shortlist" in out["markdown"]
-    assert "| RELIANCE | 91.5 | ₹2,500.00 | ₹2,510.00 | ₹2,460.00 | ₹2,600.00 |" in out["markdown"]
-    assert "| TCS | 88.0 |" in out["markdown"]
-    assert "_None today._" in out["markdown"]  # empty harvest category rendered gracefully
+    assert res["total_candidates"] == 2
+    assert res["bullish"][0]["symbol"] == "RELIANCE"
+    assert res["bullish"][0]["conviction"] == 91.5
+    assert res["bearish"][0]["symbol"] == "TCS"
+    assert res["volatility_harvest"] == []
+    # Buzz markdown contract: header + per-category tables
+    assert "📋 D-1 Pre-Market Shortlist" in res["markdown"]
+    assert "| RELIANCE | 91.5 | 30.0 | 22.4 | Oil, Gas & Energy | WATCHING | — |" in res["markdown"]
+    assert "| TCS | 88.0 |" in res["markdown"]
+    assert "_None today._" in res["markdown"]  # empty harvest category rendered gracefully
 
 
 # ---------------------------------------------------------------------------
@@ -181,24 +186,22 @@ def _poll_triggers(tmp_path: Path, watchlist: Path, now: datetime) -> dict:
 
 def test_trigger_diff_notifies_once_then_suppresses(tmp_path: Path, triggered_watchlist: Path):
     first = _poll_triggers(tmp_path, triggered_watchlist, MONDAY_1000)
+    res = first["result"]
 
-    assert first["has_updates"] is True
-    assert len(first["events"]) == 1
-    ev = first["events"][0]
-    assert ev["event_type"] == "TRIGGERED"
+    assert len(res["new_breakouts"]) == 1
+    ev = res["new_breakouts"][0]
     assert ev["symbol"] == "RELIANCE"
     assert ev["bias"] == "BULLISH"
-    assert ev["triggered_at"]  # locked trigger timestamp
+    assert ev["trigger_time"]  # locked trigger timestamp
     assert ev["contract"]
     assert ev["lot_size"] > 0
-    assert ev["entry_ltp"] is not None and ev["entry_ltp"] > 0
-    assert ev["target_premium"] is not None and ev["sl_premium"] is not None
+    assert ev["ltp"] is not None and ev["ltp"] > 0
+    assert ev["target_premium"] is not None and ev["trailing_sl"] is not None
     assert ev["delta"] is not None
 
     # Anti-spam: identical re-poll must return an EMPTY delta
     second = _poll_triggers(tmp_path, triggered_watchlist, datetime(2026, 8, 17, 10, 5))
-    assert second["has_updates"] is False
-    assert second["events"] == []
+    assert len(second["result"]["new_breakouts"]) == 0
 
     # Tracker persisted atomically and is valid JSON
     tracker = json.loads((tmp_path / "alert_state_tracker.json").read_text(encoding="utf-8"))
@@ -210,8 +213,8 @@ def test_trigger_diff_resets_next_day(tmp_path: Path, triggered_watchlist: Path)
 
     # Next trading day: same breakout re-notifies (stale suppression dropped)
     next_day = _poll_triggers(tmp_path, triggered_watchlist, datetime(2026, 8, 18, 10, 0))
-    assert next_day["has_updates"] is True
-    assert next_day["events"][0]["symbol"] == "RELIANCE"
+    assert len(next_day["result"]["new_breakouts"]) == 1
+    assert next_day["result"]["new_breakouts"][0]["symbol"] == "RELIANCE"
 
 
 # ---------------------------------------------------------------------------
