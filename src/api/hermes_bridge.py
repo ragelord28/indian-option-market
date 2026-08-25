@@ -207,7 +207,18 @@ def check_system_status(
     except Exception:
         pass
 
-    return result
+    # Read active positions
+    tracker = _load_tracker(Path(TRACKER_FILE))
+    active_positions = len(tracker.get("positions", {}))
+    result["active_positions"] = active_positions
+
+    return {
+        "tool": "status",
+        "as_of": now_ist.strftime("%Y-%m-%dT%H:%M:%S%z") or now_ist.isoformat(),
+        "scope": "Desk operational health and authentication state",
+        "result": result,
+        "note": f"System is currently {result['status']}. Active positions: {active_positions}. Market Phase: {result['market_phase']}."
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -219,17 +230,13 @@ def _shortlist_row(item: Dict[str, Any]) -> Dict[str, Any]:
     """Compact a watchlist item into a Buzz-readable row."""
     return {
         "symbol": item.get("symbol"),
-        "regime": item.get("regime"),
+        "conviction": item.get("conviction_score"),
+        "atr": item.get("atr_14"),
+        "hv20": item.get("hv_20", item.get("hv20")),
         "sector": item.get("sector"),
-        "conviction_score": item.get("conviction_score"),
-        "close": item.get("close"),
-        "entry": item.get("entry"),
-        "stop_loss": item.get("stop_loss"),
-        "target": item.get("target"),
-        "atr_14": item.get("atr_14"),
-        "hv_20": item.get("hv_20", item.get("hv20")),
+        "status": item.get("status", "WATCHING"),
+        "veto_reason": item.get("veto_reason")
     }
-
 
 def _fmt_rupee(value: Any) -> str:
     """Format ₹ levels defensively — missing/partial data renders as '—'."""
@@ -243,14 +250,14 @@ def _markdown_table(rows: List[Dict[str, Any]]) -> str:
     """Render shortlist rows as a GitHub-flavored Markdown table for Buzz."""
     if not rows:
         return "_None today._"
-    headers = ["Symbol", "Conviction", "Close", "Entry", "SL", "Target", "ATR", "HV20"]
+    headers = ["Symbol", "Conviction", "ATR", "HV20", "Sector", "Status", "Veto Reason"]
     lines = ["| " + " | ".join(headers) + " |", "|" + "---|" * len(headers)]
     for r in rows:
         lines.append(
-            f"| {r.get('symbol', '—')} | {r.get('conviction_score', '—')} "
-            f"| {_fmt_rupee(r.get('close'))} | {_fmt_rupee(r.get('entry'))} "
-            f"| {_fmt_rupee(r.get('stop_loss'))} | {_fmt_rupee(r.get('target'))} "
-            f"| {r.get('atr_14', '—')} | {r.get('hv_20', '—')} |"
+            f"| {r.get('symbol', '—')} | {r.get('conviction', '—')} "
+            f"| {r.get('atr', '—')} | {r.get('hv20', '—')} "
+            f"| {r.get('sector', '—')} | {r.get('status', '—')} "
+            f"| {r.get('veto_reason') or '—'} |"
         )
     return "\n".join(lines)
 
@@ -262,11 +269,6 @@ def get_premarket_shortlist(
     """
     INTERACTIVE endpoint — verify/execute the D-1 EOD scan and format the
     complete pre-market shortlist for Buzz.
-
-    ALWAYS returns the full payload with Top Bullish, Top Bearish, and
-    Volatility Harvest candidates (Autopsy conviction, ATR, trigger levels)
-    plus a ready-to-render Markdown table — regardless of whether anything
-    changed since the last poll. Never suppress on a user's explicit ask.
     """
     wl_path = Path(watchlist_path)
     wl: Dict[str, Any] = _load_json(wl_path, {})
@@ -286,22 +288,30 @@ def get_premarket_shortlist(
     bullish = [_shortlist_row(i) for i in wl.get("top_bullish", [])]
     bearish = [_shortlist_row(i) for i in wl.get("top_bearish", [])]
     harvest = [_shortlist_row(i) for i in wl.get("top_volatility_harvest", [])]
+    vetoed = [_shortlist_row(i) for i in wl.get("vetoed_candidates", [])]
 
     markdown = (
         "## 📋 D-1 Pre-Market Shortlist\n\n"
         f"**🟢 Top Bullish**\n\n{_markdown_table(bullish)}\n\n"
         f"**🔴 Top Bearish**\n\n{_markdown_table(bearish)}\n\n"
-        f"**🟡 Volatility Harvest**\n\n{_markdown_table(harvest)}\n"
+        f"**🟡 Volatility Harvest**\n\n{_markdown_table(harvest)}\n\n"
+        f"**🚫 Vetoed Candidates**\n\n{_markdown_table(vetoed)}\n"
     )
 
     return {
-        "generated_at": wl.get("timestamp", datetime.now().isoformat()),
-        "total_scanned": wl.get("total_scanned"),
-        "total_candidates": len(bullish) + len(bearish) + len(harvest),
-        "bullish": bullish,
-        "bearish": bearish,
-        "volatility_harvest": harvest,
-        "markdown": markdown,
+        "tool": "premarket",
+        "as_of": wl.get("timestamp", datetime.now().isoformat()),
+        "scope": "Full D-1 EOD Watchlist & Filtered Candidates",
+        "result": {
+            "total_scanned": wl.get("total_scanned"),
+            "total_candidates": len(bullish) + len(bearish) + len(harvest),
+            "bullish": bullish,
+            "bearish": bearish,
+            "volatility_harvest": harvest,
+            "vetoed_candidates": vetoed,
+            "markdown": markdown,
+        },
+        "note": "This reflects the static D-1 shortlist for the day. For live intraday triggers against this list, use the 'scan' tool."
     }
 
 
@@ -393,21 +403,17 @@ def poll_actionable_triggers_diff(
 
         events.append(
             {
-                "event_type": "TRIGGERED",
-                "timestamp": now_ist.strftime("%Y-%m-%d %H:%M IST"),
                 "symbol": sym,
-                "bias": item.get("bias"),
-                "triggered_at": triggered_at,
-                "conviction_score": item.get("conviction_score"),
-                "spot": item.get("close"),
-                "contract": naked.get("option_symbol") or primary_leg.get("Option Contract"),
-                "strike": naked.get("strike"),
-                "entry_ltp": naked.get("option_entry_limit"),
-                "target_premium": naked.get("option_target_exit"),
-                "sl_premium": naked.get("option_sl_exit"),
+                "breakout_level": item.get("entry"),
+                "ltp": naked.get("option_entry_limit"),
+                "trigger_time": triggered_at,
+                "selected_strike": naked.get("strike"),
                 "delta": primary_leg.get("Delta", DELTA_ANCHOR),
+                "trailing_sl": naked.get("option_sl_exit"),
+                "bias": item.get("bias"),
+                "contract": naked.get("option_symbol") or primary_leg.get("Option Contract"),
+                "target_premium": naked.get("option_target_exit"),
                 "lot_size": naked.get("lot_size"),
-                "entry_spot_trigger": item.get("entry"),
             }
         )
         notified_today[sym] = triggered_at
@@ -415,11 +421,19 @@ def poll_actionable_triggers_diff(
     if events:
         _save_tracker(Path(tracker_path), tracker)
 
+    # Calculate watchlist_size
+    wl = _load_json(Path(watchlist_path), {})
+    wl_size = len(wl.get("top_bullish", [])) + len(wl.get("top_bearish", [])) + len(wl.get("top_volatility_harvest", []))
+
     return {
-        "has_updates": bool(events),
-        "events": events,
-        "poll_time_ist": now_ist.strftime("%Y-%m-%d %H:%M IST"),
-        "radar_timestamp": radar.get("timestamp"),
+        "tool": "scan",
+        "as_of": now_ist.strftime("%Y-%m-%dT%H:%M:%S%z") or now_ist.isoformat(),
+        "scope": "NEW breakout events since 09:30 vs locked 15-min ORB levels",
+        "result": {
+            "new_breakouts": events,
+            "watchlist_size": wl_size
+        },
+        "note": f"Empty new_breakouts means zero NEW triggers at this tick. The {wl_size}-stock watchlist remains active under 'premarket' scope."
     }
 
 
@@ -835,10 +849,17 @@ def _cli() -> int:
     p_daemon = sub.add_parser("daemon", help="Background 5-min diff polling during market hours")
     p_daemon.add_argument("--interval", type=int, default=300)
 
+    p_ask = sub.add_parser("ask", help="Natural language orchestrator intent routing")
+    p_ask.add_argument("utterance", type=str)
+
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    if args.command == "status":
+    if args.command == "ask":
+        from src.api.orchestrator import orchestrate
+        print(orchestrate(args.utterance))
+        return 0
+    elif args.command == "status":
         out = check_system_status()
     elif args.command == "premarket":
         out = get_premarket_shortlist()
