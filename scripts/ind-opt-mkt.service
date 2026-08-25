@@ -1,0 +1,21 @@
+[Unit]
+Description=IND OPT MKT Autonomous Options Trading Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=radhe-radhe
+WorkingDirectory=/home/radhe-radhe/Documents/indian-option-market
+# Ensure venv is used
+ExecStart=/home/radhe-radhe/Documents/indian-option-market/venv/bin/python3 scripts/hermes_native_dispatcher.py --interval 300
+Restart=always
+RestartSec=10
+Environment="DRY_RUN=true"
+Environment="PYTHONPATH=/home/radhe-radhe/Documents/indian-option-market"
+
+# Security guardrails (Do not change these)
+NoNewPrivileges=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

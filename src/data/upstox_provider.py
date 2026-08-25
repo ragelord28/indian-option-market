@@ -114,8 +114,16 @@ class UpstoxProvider(BaseDataProvider):
             res = requests.get(url, headers=headers, timeout=3)
             if res.status_code == 200:
                 return True
+            if res.status_code in (401, 403):
+                from src.data.upstox_auth import notify_auth_failure
+                notify_auth_failure()
+                return False
             quote_url = f"{UPSTOX_BASE_URL}/market-quote/quotes?instrument_key=NSE_EQ|INE002A01018"
             qres = requests.get(quote_url, headers=headers, timeout=3)
+            if qres.status_code in (401, 403):
+                from src.data.upstox_auth import notify_auth_failure
+                notify_auth_failure()
+                return False
             return qres.status_code == 200
         except Exception:
             return False
@@ -250,6 +258,9 @@ class UpstoxProvider(BaseDataProvider):
 
         try:
             response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code in (401, 403):
+                from src.data.upstox_auth import notify_auth_failure
+                notify_auth_failure()
             response.raise_for_status()
             res_data = response.json()
         except Exception as e:
@@ -362,6 +373,9 @@ class UpstoxProvider(BaseDataProvider):
 
         try:
             response = requests.get(url, headers=headers, params=params, timeout=10)
+            if response.status_code in (401, 403):
+                from src.data.upstox_auth import notify_auth_failure
+                notify_auth_failure()
             response.raise_for_status()
             res_data = response.json()
         except Exception as e:
@@ -433,6 +447,9 @@ class UpstoxProvider(BaseDataProvider):
                 }
                 params = {"instrument_key": ",".join(instrument_keys)}
                 res = _fetch_with_retry(url, headers, params)
+                if res.status_code in (401, 403):
+                    from src.data.upstox_auth import notify_auth_failure
+                    notify_auth_failure()
                 if res.status_code == 200:
                     data = res.json().get("data", {})
                     for ik, qdata in data.items():

@@ -366,12 +366,6 @@ def run_morning_radar(
     # Conviction-Based Priority Queue
     triggered_items = [item for item in radar_items if item["status"] == "TRIGGERED"]
     triggered_items.sort(key=lambda x: x.get("conviction_score", 80.0), reverse=True)
-    
-    max_slots = 5
-    for i, item in enumerate(triggered_items):
-        if i >= max_slots:
-            item["status"] = "QUEUED_NO_SLOT"
-            item["veto_reason"] = "All 5 portfolio slots allocated to higher conviction setups"
 
     output_data = {
         "timestamp": datetime.now().isoformat(),

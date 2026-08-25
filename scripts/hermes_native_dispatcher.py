@@ -133,6 +133,13 @@ def _deliver_via_notify_send(title: str, body: str) -> bool:
     except Exception:
         return False
 
+def _deliver_trigger_notifications(events: List[Dict[str, Any]]) -> None:
+    for ev in events:
+        if ev.get("event_type") == "TRIGGERED":
+            title = f"🚨 ORB Breakout: {ev.get('symbol')}"
+            body = f"{ev.get('bias')} | Strike: {ev.get('strike')} | Entry: ₹{ev.get('entry_ltp')} | Target: ₹{ev.get('target_premium')}"
+            _deliver_via_notify_send(title, body)
+
 
 def _deliver_via_hermes(title: str, body: str) -> bool:
     hermes = shutil.which("hermes") or str(Path.home() / ".local/bin/hermes")
@@ -172,7 +179,11 @@ def deliver(title: str, body: str, events: Optional[List[Dict[str, Any]]] = None
     """Push one bulletin through the delivery chain; always log events."""
     now = now_ist()
     _append_events_log(events or [])
-    _deliver_via_notify_send(title, body)
+    
+    if events and any(ev.get("event_type") == "TRIGGERED" for ev in events):
+        _deliver_trigger_notifications(events)
+    else:
+        _deliver_via_notify_send(title, body)
     log_path = _deliver_to_fallback_log(title, body, now)
     
     # Print directly to stdout so Hermes Cron 'bot-chat' delivery injects the markdown!
@@ -298,7 +309,11 @@ def run_cycle(verbose: bool = True) -> Dict[str, Any]:
 
 def daemon_loop(interval_sec: int) -> None:
     print(f"🤖 IND OPT MKT dispatcher daemon — cycle every {interval_sec}s. Ctrl+C to stop.", flush=True)
+    stop_file = PROJECT_ROOT / "data/STOP"
     while True:
+        if stop_file.exists():
+            print("🛑 Kill switch (data/STOP) activated. Halting dispatcher daemon gracefully.", flush=True)
+            break
         try:
             out = run_cycle(verbose=False)
             acts = [a for a in out.get("actions", []) if a.get("delivered_via") not in (None, "phase-note")]
@@ -318,6 +333,9 @@ def main() -> int:
     parser.add_argument("--interval", type=int, default=300, help="Daemon cycle interval seconds (default 300)")
     parser.add_argument("--status", action="store_true", help="Print dispatcher state and exit")
     args = parser.parse_args()
+
+    # Enforce strict DRY_RUN mode for safety
+    os.environ["DRY_RUN"] = "true"
 
     if args.status:
         print(json.dumps(load_state(), indent=2))

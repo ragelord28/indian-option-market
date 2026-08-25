@@ -18,6 +18,7 @@ from src.strategies.base_strategy import BaseStrategy, Signal
 from src.backtester.trade import Trade
 from src.backtester.synthetic_options import calculate_option_price, find_strike_for_delta
 from src.risk.risk_manager import RiskManager
+from src.backtester.transaction_costs import NSETransactionCostModel
 
 
 def calculate_fno_transaction_cost(
@@ -26,26 +27,8 @@ def calculate_fno_transaction_cost(
     quantity: int,
     is_option: bool = True
 ) -> float:
-    """
-    Calculate realistic Indian F&O transaction cost friction.
-
-    Breakdown:
-    - Brokerage: ₹20 buy + ₹20 sell = ₹40.0
-    - STT: 0.1% on sell turnover (exit_premium * quantity * 0.001)
-    - Exchange Txn Charges: 0.05% on total turnover ((entry_premium + exit_premium) * quantity * 0.0005)
-    - GST: 18% on (Brokerage + Exchange charges)
-    - Stamp Duty: 0.003% on buy turnover (entry_premium * quantity * 0.00003)
-
-    ``is_option`` is retained for API compatibility (equity vs. derivative fee
-    schedules); the current friction model applies uniformly to both.
-    """
-    brokerage = 40.0
-    stt = exit_premium * quantity * 0.001
-    exchange_txn = (entry_premium + exit_premium) * quantity * 0.0005
-    gst = (brokerage + exchange_txn) * 0.18
-    stamp_duty = entry_premium * quantity * 0.00003
-    total_costs = brokerage + stt + exchange_txn + gst + stamp_duty
-    return round(total_costs, 2)
+    model = NSETransactionCostModel()
+    return model.calculate_costs(entry_premium, exit_premium, quantity, is_option)
 
 
 def _empty_result(final_capital: float) -> Dict[str, Any]:
@@ -189,9 +172,10 @@ class PortfolioEngine:
                     exit_found = True
                     break
 
-            # Calendar day DTE expiration check (30 days max for options / stocks)
-            elapsed_days = (bar_time - entry_time).total_seconds() / 86400.0
-            if elapsed_days >= 30.0:
+            # Monthly expiry check (force close if expired)
+            from src.data.option_analytics import get_days_to_monthly_expiry
+            dte = float(get_days_to_monthly_expiry(bar_time))
+            if dte <= 0.0:
                 trigger_price = float(bar["close"])
                 exit_time = bar_time
                 exit_bar_idx = i
@@ -213,7 +197,8 @@ class PortfolioEngine:
         elapsed_days = (exit_time - entry_time).total_seconds() / 86400.0
 
         if is_option:
-            dte = max(30.0 - elapsed_days, 0.0)
+            from src.data.option_analytics import get_days_to_monthly_expiry
+            dte = float(get_days_to_monthly_expiry(exit_time))
             exit_sigma = _get_sigma(exit_bar, pos.get("metadata"))
             exit_premium = calculate_option_price(
                 opt_type, S=trigger_price, K=strike, days_to_expiry=dte, sigma=exit_sigma
@@ -372,15 +357,17 @@ class PortfolioEngine:
                     opt_type = "p" if ("PUT" in sig_type or "PE" in sig_type) else "c"
                 opt_type = str(opt_type).lower()
                 target_delta = signal.metadata.get("delta_target")
+                from src.data.option_analytics import get_days_to_monthly_expiry
+                dte = float(get_days_to_monthly_expiry(sig_time))
                 strike = find_strike_for_delta(
-                    opt_type, entry_spot, target_delta, days_to_expiry=30.0, sigma=sigma
+                    opt_type, entry_spot, target_delta, days_to_expiry=dte, sigma=sigma
                 )
 
                 entry_premium = calculate_option_price(
-                    opt_type, S=entry_spot, K=strike, days_to_expiry=30.0, sigma=sigma
+                    opt_type, S=entry_spot, K=strike, days_to_expiry=dte, sigma=sigma
                 )
                 stop_premium = calculate_option_price(
-                    opt_type, S=stop_loss, K=strike, days_to_expiry=30.0, sigma=sigma
+                    opt_type, S=stop_loss, K=strike, days_to_expiry=dte, sigma=sigma
                 )
 
                 quantity = self.risk_manager.calculate_position_size(
@@ -426,7 +413,7 @@ class PortfolioEngine:
                 "target_price": target_price,
                 "is_bullish": is_bullish,
                 "is_option": is_option,
-                "option_type": signal.metadata.get("option_type", "c"),
+                "option_type": opt_type if is_option else "c",
                 "strike": strike if is_option else entry_spot,
                 "quantity": quantity,
                 "lot_size": trade_lot_size,

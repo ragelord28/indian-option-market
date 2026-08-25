@@ -12,6 +12,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import os
 from pathlib import Path
 from urllib.parse import urlencode, parse_qs, urlparse
+import subprocess
+import logging
 import requests
 from dotenv import load_dotenv, set_key
 
@@ -44,6 +46,20 @@ def get_login_url(api_key: str = None, redirect_uri: str = None) -> str:
         "redirect_uri": redirect_target,
     }
     return f"{UPSTOX_AUTH_DIALOG_URL}?{urlencode(params)}"
+
+
+def notify_auth_failure():
+    """Trigger desktop notification and log auth failure."""
+    log_path = Path("data/logs/dispatcher.log")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    msg = "Upstox Auth Token Expired (HTTP 401). Please re-authenticate."
+    with open(log_path, "a", encoding="utf-8") as f:
+        import datetime
+        f.write(f"[{datetime.datetime.now().isoformat()}] ERROR: {msg}\n")
+    try:
+        subprocess.run(["notify-send", "-u", "critical", "Hermes Auth Error", msg], check=False)
+    except Exception:
+        pass
 
 
 def fetch_and_save_token(

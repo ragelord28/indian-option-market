@@ -345,7 +345,7 @@ def poll_actionable_triggers_diff(
     watchlist_path: Path = WATCHLIST_FILE,
     radar_path: Path = RADAR_FILE,
     now_dt: Optional[datetime] = None,
-    force_session_evaluation: bool = False,
+    force_session_evaluation: bool = True,
 ) -> Dict[str, Any]:
     """
     BACKGROUND polling hook — run the Morning Radar and return ONLY newly
@@ -674,11 +674,12 @@ def poll_active_positions_diff(
                     pass
 
     try:
-        alerts = monitor_active_trades(
-            active_file=active_file,
-            quotes_override=quotes_override,
-            now_dt_override=now_dt_override,
-        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            alerts = monitor_active_trades(
+                active_file=active_file,
+                quotes_override=quotes_override,
+                now_dt_override=now_dt_override,
+            )
     except Exception as err:
         logger.warning(f"Position monitor poll failed: {err}")
         alerts = []
