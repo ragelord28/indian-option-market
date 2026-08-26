@@ -258,6 +258,8 @@ selected_tab = st.sidebar.radio(
         "💼 Live Trade Journal & Capital Tracker",
         "📈 Portfolio & Benchmark Analytics",
         "🛡️ Risk & Audit Trail",
+        "🔮 Kronos Forecaster",
+        "🕵️ Scrapling Intel",
     ],
 )
 
@@ -370,9 +372,6 @@ if selected_tab == "📊 D-1 Command Center":
                     "Trigger Zone": r["trigger_zone"],
                     "Target Spot": f"₹{r['target']:,.2f}",
                     "Optimal Strategy": strat_name,
-                    "HV20 (%)": f"{r.get('hv_20', 22.4):.1f}%",
-                    "VRP (%)": f"{r.get('vrp', 2.5):+.1f}%",
-                    "Liq Grade": ticket.get("liquidity_grade", "A"),
                     "Conviction Score": f"{r.get('conviction_score', 82.0):.1f}",
                 }
             )
@@ -834,3 +833,47 @@ elif selected_tab == "🛡️ Risk & Audit Trail":
         with open(audit_path, "r", encoding="utf-8") as f:
             log_lines = f.readlines()
         st.text_area("Audit Log Output", "".join(log_lines[-20:]), height=300)
+
+# -----------------------------------------------------------------------------
+# TAB 6: Kronos Forecaster
+# -----------------------------------------------------------------------------
+elif selected_tab == "🔮 Kronos Forecaster":
+    st.markdown('<p class="main-title">🔮 Kronos Forecaster</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Candlestick AI — Multi-timeframe price action forecasting for F&O equities</p>', unsafe_allow_html=True)
+
+    kronos_col1, kronos_col2 = st.columns([1, 1])
+
+    with kronos_col1:
+        kronos_symbols = [r["symbol"] for r in radar_items] if radar_items else ["RELIANCE", "NIFTY50", "BANKNIFTY", "INFY", "TCS"]
+        kronos_selected = st.selectbox("Select F&O Scrip:", kronos_symbols, key="kronos_scrip")
+
+    with kronos_col2:
+        kronos_timeframe = st.selectbox("Forecast Timeframe:", ["15m", "1h", "1d"], key="kronos_tf")
+
+    if st.button("⚡ Generate AI Forecast", type="primary", key="kronos_run"):
+        with st.spinner(f"Running Kronos forecast for {kronos_selected} on {kronos_timeframe}..."):
+            st.info(f"🔮 Kronos engine for **{kronos_selected}** ({kronos_timeframe}) is initialising. Candlestick pattern recognition and AI forecast modules will be wired here.")
+
+    st.markdown("---")
+    st.markdown("### 📊 Forecast Output")
+    st.info("Select a scrip and timeframe above, then click **Generate AI Forecast** to produce candlestick pattern analysis, support/resistance zones, and directional probability scores.")
+
+# -----------------------------------------------------------------------------
+# TAB 7: Scrapling Intel
+# -----------------------------------------------------------------------------
+elif selected_tab == "🕵️ Scrapling Intel":
+    st.markdown('<p class="main-title">🕵️ Scrapling Intel</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Deep Web Scraper & News Synthesis — Real-time intelligence gathering for F&O equities</p>', unsafe_allow_html=True)
+
+    scrapling_query = st.text_input("Search Scrip or Topic:", placeholder="e.g. RELIANCE earnings, NIFTY expiry, RBI policy", key="scrapling_query")
+
+    if st.button("🔍 Run Intel Gather", type="primary", key="scrapling_run"):
+        if scrapling_query.strip():
+            with st.spinner(f"Gathering intelligence for '{scrapling_query}'..."):
+                st.info(f"🕵️ Scrapling engine is initialising for query: **{scrapling_query}**. Web scraping, news aggregation, and sentiment synthesis modules will be wired here.")
+        else:
+            st.warning("Please enter a scrip name or topic to search.")
+
+    st.markdown("---")
+    st.markdown("### 📰 Intelligence Feed")
+    st.info("Enter a scrip or topic above and click **Run Intel Gather** to pull latest news, social sentiment, institutional activity, and corporate action data.")
