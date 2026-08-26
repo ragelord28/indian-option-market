@@ -203,6 +203,16 @@ def build_kronos_chart(result: Dict[str, Any]):
     symbol = result["symbol"]
     tf = result["timeframe"]
 
+    import pandas as pd
+
+    # Extract the date part to find fully missing days (holidays/weekends)
+    if hist_df is not None and not hist_df.empty:
+        all_days = pd.date_range(start=hist_df["timestamp"].min().date(), end=hist_df["timestamp"].max().date())
+        trading_days = pd.to_datetime(hist_df["timestamp"].dt.date).unique()
+        missing_holidays = all_days.difference(trading_days).strftime('%Y-%m-%d').tolist()
+    else:
+        missing_holidays = []
+
     fig = go.Figure()
 
     # Historical candlestick
@@ -270,6 +280,14 @@ def build_kronos_chart(result: Dict[str, Any]):
         xaxis_rangeslider_visible=True,
         height=600,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
+    fig.update_xaxes(
+        rangebreaks=[
+            dict(bounds=["sat", "mon"]),  # Standard weekends
+            dict(bounds=[15.5, 9.25], pattern="hour"),  # Overnight gaps (15:30 to 09:15)
+            dict(values=missing_holidays)  # Dynamic market holidays
+        ]
     )
 
     return fig
