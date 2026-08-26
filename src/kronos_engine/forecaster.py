@@ -202,8 +202,8 @@ def build_kronos_chart(result: Dict[str, Any]):
         low=hist_df["low"],
         close=hist_df["close"],
         name="Historical",
-        increasing_line_color="#26a69a",
-        decreasing_line_color="#ef5350",
+        increasing_line_color="#00c087",
+        decreasing_line_color="#ff3b69",
     ))
 
     if pred_df is not None and not pred_df.empty:
@@ -224,9 +224,9 @@ def build_kronos_chart(result: Dict[str, Any]):
             low=forecast_low,
             close=forecast_close,
             name="Kronos Forecast",
-            increasing_line_color="#64b5f6",
-            decreasing_line_color="#ff8a65",
-            opacity=0.7,
+            increasing_line_color="#00c087",
+            decreasing_line_color="#ff3b69",
+            opacity=0.6,
         ))
 
         # Forecast close line (dotted)
@@ -235,7 +235,7 @@ def build_kronos_chart(result: Dict[str, Any]):
             y=[last_hist_close] + forecast_close,
             mode="lines",
             name="Forecast Trajectory",
-            line=dict(color="#42a5f5", width=2, dash="dot"),
+            line=dict(color="#ffffff", width=2, dash="dot"),
         ))
 
         # Confidence band
@@ -243,8 +243,8 @@ def build_kronos_chart(result: Dict[str, Any]):
             x=forecast_ts + forecast_ts[::-1],
             y=forecast_high + forecast_low[::-1],
             fill="toself",
-            fillcolor="rgba(66, 165, 245, 0.1)",
-            line=dict(color="rgba(66, 165, 245, 0)"),
+            fillcolor="rgba(255, 255, 255, 0.1)",
+            line=dict(color="rgba(255, 255, 255, 0)"),
             name="Forecast Range (H/L)",
             showlegend=True,
         ))
@@ -254,8 +254,10 @@ def build_kronos_chart(result: Dict[str, Any]):
         xaxis_title="Time",
         yaxis_title="Price (₹)",
         template="plotly_dark",
-        xaxis_rangeslider_visible=False,
-        height=550,
+        hovermode="x unified",
+        dragmode="pan",
+        xaxis_rangeslider_visible=True,
+        height=600,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
 

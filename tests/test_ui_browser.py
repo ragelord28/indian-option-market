@@ -145,3 +145,37 @@ def test_streamlit_ui_browser():
 
 if __name__ == "__main__":
     test_streamlit_ui_browser()
+
+
+# ==========================================
+# TAB 2: KRONOS AI FORECAST
+# ==========================================
+with tab_kronos:
+    st.subheader("Kronos Foundation Model: On-Demand Forecast")
+    st.caption("AI-driven trajectory based on 12B+ historical K-line sequences.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        selected_scrip = st.selectbox("Select F&O Scrip:", ["RELIANCE", "HDFCBANK", "ITC", "AUBANK", "CUMMINSIND"])
+    with col2:
+        selected_tf = st.selectbox("Select Timeframe:", ["15-Minute", "1-Hour", "1-Day"])
+        
+    if st.button("Generate AI Forecast"):
+        with st.spinner(f"Fetching 512 {selected_tf} candles for {selected_scrip} and running Kronos inference..."):
+            st.info("The interactive Plotly forecast chart will render here.")
+
+# ==========================================
+# TAB 3: SCRAPLING & DEEPSEEK INTEL
+# ==========================================
+with tab_scrapling:
+    st.subheader("Deep-Web Scrapling & AI Sentiment Synthesis")
+    st.caption("Scrapes non-mainstream exchange filings and niche forums, synthesized by DeepSeek.")
+    
+    intel_scrip = st.text_input("Enter Scrip to Scrape (e.g., AUBANK):")
+    
+    if st.button("Run Intel Gather"):
+        if intel_scrip:
+            with st.spinner(f"Deploying Scrapling spiders for {intel_scrip} and synthesizing..."):
+                st.info("DeepSeek bullet points will render here.")
+        else:
+            st.warning("Please enter a scrip name.")

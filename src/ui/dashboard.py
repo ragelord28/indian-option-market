@@ -841,17 +841,46 @@ elif selected_tab == "🔮 Kronos Forecaster":
     st.markdown('<p class="main-title">🔮 Kronos Forecaster</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-title">Candlestick AI — Multi-timeframe price action forecasting powered by NeoQuasar/Kronos-base (102M params, AAAI 2026)</p>', unsafe_allow_html=True)
 
+    # 1. Universe Filter Mode Selector
+    universe_mode = st.radio(
+        "Universe Filter:", 
+        ["🎯 D-1 Shortlist (15)", "🔥 All F&O Universe (~180)", "🌐 Search Any NSE/BSE Stock"], 
+        horizontal=True
+    )
+
     kronos_col1, kronos_col2, kronos_col3 = st.columns([2, 1, 1])
 
     with kronos_col1:
-        kronos_symbols = [r["symbol"] for r in radar_items] if radar_items else ["RELIANCE", "NIFTY50", "BANKNIFTY", "INFY", "TCS"]
-        kronos_selected = st.selectbox("Select F&O Scrip:", kronos_symbols, key="kronos_scrip")
+        if universe_mode.startswith("🎯"):
+            kronos_symbols = [r["symbol"] for r in radar_items] if radar_items else ["RELIANCE", "NIFTY50", "BANKNIFTY", "INFY", "TCS"]
+            kronos_selected = st.selectbox("Select F&O Scrip:", kronos_symbols, key="kronos_scrip_d1")
+        elif universe_mode.startswith("🔥"):
+            try:
+                from src.scanner.universe import FULL_FNO_UNIVERSE
+                kronos_symbols = sorted(FULL_FNO_UNIVERSE)
+            except ImportError:
+                kronos_symbols = ["RELIANCE", "HDFCBANK", "ICICIBANK", "SBIN", "TCS", "INFY"]
+            kronos_selected = st.selectbox("Select F&O Scrip:", kronos_symbols, key="kronos_scrip_fno")
+        else:
+            kronos_selected = st.text_input("Enter NSE/BSE Ticker Symbol:", value="TATAMOTORS", key="kronos_scrip_search").strip()
+            if not kronos_selected.endswith(".NS") and not kronos_selected.endswith(".BO") and "^" not in kronos_selected:
+                # Default to NSE if no suffix provided for search mode, though yfinance handles some without it
+                pass # let forecaster.py handle adding .NS
 
     with kronos_col2:
         kronos_timeframe = st.selectbox("Forecast Timeframe:", ["15m", "1h", "1d"], key="kronos_tf")
 
     with kronos_col3:
-        kronos_device = st.selectbox("Device:", ["cpu", "cuda:0"], key="kronos_device")
+        import torch
+        if torch.cuda.is_available():
+            device_opts = ["cuda:0", "cpu"]
+            device_idx = 0
+        else:
+            device_opts = ["cpu", "cuda:0 (Unavailable)"]
+            device_idx = 0
+            
+        kronos_device_raw = st.selectbox("Device:", device_opts, index=device_idx, key="kronos_device")
+        kronos_device = "cpu" if "Unavailable" in kronos_device_raw else kronos_device_raw
 
     tf_labels = {"15m": "4 hours (16 bars)", "1h": "24 hours (24 bars)", "1d": "30 days (30 bars)"}
     st.caption(f"📐 **Lookback**: 512 candles | **Forecast Horizon**: {tf_labels.get(kronos_timeframe, '16 bars')} | **Model**: `Kronos-base` (102.3M params)")
@@ -889,7 +918,15 @@ elif selected_tab == "🔮 Kronos Forecaster":
 
                 # Phase 3: Render Plotly Chart
                 fig = build_kronos_chart(result)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(
+                    fig, 
+                    use_container_width=True, 
+                    config={
+                        "scrollZoom": True, 
+                        "displayModeBar": True, 
+                        "displaylogo": False
+                    }
+                )
 
                 # Forecast summary table
                 pred_df = result["forecast_df"]
