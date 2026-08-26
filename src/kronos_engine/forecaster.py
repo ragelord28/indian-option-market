@@ -55,7 +55,17 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512, exchan
 
     params = TF_MAP.get(timeframe, TF_MAP["1d"])
 
-    df = yf.download(ticker_sym, period=params["period"], interval=params["interval"], progress=False)
+    # Map timeframe to a safe yfinance period
+    if timeframe in ["1m", "5m", "15m", "30m"]:
+        period = "60d" # Max allowed for intraday under 1h
+    elif timeframe == "1h":
+        period = "730d" # Max allowed for 1h
+    else:
+        period = "5y" # Plenty for 512 daily candles
+
+    # Pass the explicit period to yfinance
+    ticker = yf.Ticker(ticker_sym)
+    df = ticker.history(period=period, interval=params["interval"])
 
     if df is None or df.empty:
         raise ValueError(f"Unable to fetch {lookback} historical candles for {ticker_sym}. Verify if the scrip has sufficient trading history.")
@@ -203,16 +213,6 @@ def build_kronos_chart(result: Dict[str, Any]):
     symbol = result["symbol"]
     tf = result["timeframe"]
 
-    import pandas as pd
-
-    # Extract the date part to find fully missing days (holidays/weekends)
-    if hist_df is not None and not hist_df.empty:
-        all_days = pd.date_range(start=hist_df["timestamp"].min().date(), end=hist_df["timestamp"].max().date())
-        trading_days = pd.to_datetime(hist_df["timestamp"].dt.date).unique()
-        missing_holidays = all_days.difference(trading_days).strftime('%Y-%m-%d').tolist()
-    else:
-        missing_holidays = []
-
     fig = go.Figure()
 
     # Historical candlestick
@@ -282,12 +282,22 @@ def build_kronos_chart(result: Dict[str, Any]):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
 
-    fig.update_xaxes(
-        rangebreaks=[
-            dict(bounds=["sat", "mon"]),  # Standard weekends
-            dict(bounds=[15.5, 9.25], pattern="hour"),  # Overnight gaps (15:30 to 09:15)
-            dict(values=missing_holidays)  # Dynamic market holidays
-        ]
-    )
+    is_intraday = tf in ["1m", "5m", "15m", "30m", "1h", "60m"]
+    breaks = [dict(bounds=["sat", "mon"])] # Always hide weekends
+
+    if is_intraday:
+        # ONLY apply hourly breaks to intraday charts
+        breaks.append(dict(bounds=[15.5, 9.25], pattern="hour"))
+        
+        # Calculate missing holidays safely over the short intraday period
+        import pandas as pd
+        if hist_df is not None and not hist_df.empty:
+            all_days = pd.date_range(start=hist_df["timestamp"].min().date(), end=hist_df["timestamp"].max().date())
+            trading_days = pd.to_datetime(hist_df["timestamp"].dt.date).unique()
+            missing_holidays = all_days.difference(trading_days).strftime('%Y-%m-%d').tolist()
+            if missing_holidays:
+                breaks.append(dict(values=missing_holidays))
+
+    fig.update_xaxes(rangebreaks=breaks)
 
     return fig
