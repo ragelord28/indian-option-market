@@ -111,8 +111,9 @@ def load_kronos_predictor(device: str = "cpu"):
 def run_kronos_forecast(
     symbol: str,
     timeframe: str = "15m",
-    lookback: int = 512,
     device: str = "cpu",
+    lookback: int = 512,
+    pred_len: int = None,
     exchange: str = "NSE"
 ) -> Dict[str, Any]:
     """
@@ -137,7 +138,7 @@ def run_kronos_forecast(
 
     # 1. Fetch data
     try:
-        df = fetch_ohlcv(symbol, timeframe, lookback, exchange=exchange)
+        df = fetch_ohlcv(symbol, timeframe, lookback=lookback, exchange=exchange)
     except Exception as e:
         result["error"] = f"Data fetch failed: {e}"
         return result
