@@ -907,7 +907,9 @@ elif selected_tab == "🔮 Kronos Forecaster":
                 exchange=kronos_exchange
             )
 
-        if result and "df" in result and "forecast" in result and result["df"] is not None:
+        if result.get("error"):
+            st.error(f"❌ {result['error']}")
+        elif result and "df" in result and "forecast" in result and result["df"] is not None:
             st.success(f"✅ Kronos forecast generated: {len(result['forecast'])} bars into the future")
             fig = build_kronos_chart(
                 df=result["df"],
