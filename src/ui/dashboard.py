@@ -915,7 +915,7 @@ elif selected_tab == "🔮 Kronos Forecaster":
                 df=result["df"],
                 forecast_df=result["forecast"],
                 symbol=kronos_selected,
-                timeframe=kronos_timeframe
+                tf=kronos_timeframe
             )
             st.plotly_chart(fig, use_container_width=True)
 
