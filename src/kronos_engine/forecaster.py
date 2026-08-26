@@ -85,7 +85,7 @@ def fetch_ohlcv(symbol: str, timeframe: str = "30m", lookback: int = 512, exchan
         end_dt = datetime.datetime.now()
         
         interval = "30minute"
-        chunks = 8 if timeframe == "1h" else 3
+        chunks = 6 if timeframe == "1h" else 3
             
         for _ in range(chunks):
             to_d = end_dt.strftime('%Y-%m-%d')
@@ -121,14 +121,6 @@ def fetch_ohlcv(symbol: str, timeframe: str = "30m", lookback: int = 512, exchan
             }).dropna()
         
         df = df.reset_index()
-        df.columns = [str(col).lower() for col in df.columns]
-        df = df[["timestamp", "open", "high", "low", "close", "volume"]]
-        
-        if len(df) > lookback:
-            df = df.tail(lookback)
-            
-        return df
-        
     else:
         # yfinance logic for 1d
         if exchange == "BSE":
@@ -142,7 +134,7 @@ def fetch_ohlcv(symbol: str, timeframe: str = "30m", lookback: int = 512, exchan
         params = TF_MAP.get(timeframe, TF_MAP["1d"])
 
         end_dt = datetime.datetime.now()
-        start_dt = end_dt - datetime.timedelta(days=3650)
+        start_dt = end_dt - datetime.timedelta(days=850)
 
         ticker = yf.Ticker(ticker_sym)
         df = ticker.history(start=start_dt.strftime('%Y-%m-%d'), end=end_dt.strftime('%Y-%m-%d'), interval=params["interval"])
@@ -177,13 +169,13 @@ def fetch_ohlcv(symbol: str, timeframe: str = "30m", lookback: int = 512, exchan
         df = df.rename(columns={ts_col: "timestamp"})
         df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
         
-        df.columns = [str(col).lower() for col in df.columns]
-        
-        if len(df) > lookback:
-            df = df.tail(lookback)
+    # Strip timezones and lowercase columns
+    if not df.empty and df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+    df.columns = [str(c).lower() for c in df.columns]
 
-        return df
-
+    # Soft-cap at 600 candles. Newly listed stocks with <600 will safely return all they have.
+    return df.tail(600)
 
 def load_kronos_predictor(device: str = "cpu"):
     """
@@ -312,7 +304,19 @@ def run_kronos_forecast(
     except Exception as e:
         result["error"] = f"Inference failed: {e}"
 
-    return result
+    return {
+        "df": result.get("df"),                 # This fixes KeyError: 'df'
+        "forecast": result.get("forecast"),     # This fixes the missing trajectory
+        "signal": result.get("signal", "NEUTRAL"),
+        "pct_change": result.get("pct_change", 0.0),
+        "last_close": result.get("last_close", 0.0),
+        "forecast_close": result.get("forecast_close", 0.0),
+        "symbol": result.get("symbol"),
+        "timeframe": result.get("timeframe"),
+        "exchange": result.get("exchange"),
+        "pred_len": result.get("pred_len", 0),
+        "error": result.get("error")
+    }
 
 
 def build_kronos_chart(df: pd.DataFrame, forecast_df: pd.DataFrame, symbol: str, tf: str):
