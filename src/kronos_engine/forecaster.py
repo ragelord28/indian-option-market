@@ -85,7 +85,7 @@ def fetch_ohlcv(symbol: str, timeframe: str = "30m", lookback: int = 512, exchan
         end_dt = datetime.datetime.now()
         
         interval = "30minute"
-        chunks = 5  # 150 days total
+        chunks = 8 if timeframe == "1h" else 3
             
         for _ in range(chunks):
             to_d = end_dt.strftime('%Y-%m-%d')
@@ -142,7 +142,7 @@ def fetch_ohlcv(symbol: str, timeframe: str = "30m", lookback: int = 512, exchan
         params = TF_MAP.get(timeframe, TF_MAP["1d"])
 
         end_dt = datetime.datetime.now()
-        start_dt = end_dt - datetime.timedelta(days=2000)
+        start_dt = end_dt - datetime.timedelta(days=3650)
 
         ticker = yf.Ticker(ticker_sym)
         df = ticker.history(start=start_dt.strftime('%Y-%m-%d'), end=end_dt.strftime('%Y-%m-%d'), interval=params["interval"])
@@ -176,6 +176,8 @@ def fetch_ohlcv(symbol: str, timeframe: str = "30m", lookback: int = 512, exchan
 
         df = df.rename(columns={ts_col: "timestamp"})
         df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
+        
+        df.columns = [str(col).lower() for col in df.columns]
         
         if len(df) > lookback:
             df = df.tail(lookback)
@@ -212,14 +214,18 @@ def run_kronos_forecast(
     4. Return historical + forecast data for charting
 
     Returns dict with keys:
-        symbol, timeframe, df, forecast, pred_len, error, exchange
+        df, forecast, signal, pct_change, last_close, forecast_close, symbol, timeframe, pred_len, error, exchange
     """
     result = {
+        "df": None,
+        "forecast": None,
+        "signal": None,
+        "pct_change": 0.0,
+        "last_close": 0.0,
+        "forecast_close": 0.0,
         "symbol": symbol,
         "exchange": exchange,
         "timeframe": timeframe,
-        "df": None,
-        "forecast": None,
         "pred_len": 0,
         "error": None,
     }
@@ -272,7 +278,37 @@ def run_kronos_forecast(
             sample_count=1,
             verbose=False,
         )
-        result["forecast"] = pred_df
+        
+        # Strip timezone from forecast index/timestamp just in case
+        if "timestamp" in pred_df.columns:
+            pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"]).dt.tz_localize(None)
+        elif hasattr(pred_df.index, "tz_localize"):
+            pred_df.index = pred_df.index.tz_localize(None)
+
+        if not pred_df.empty and not df.empty:
+            last_close = float(df["close"].iloc[-1])
+            forecast_close = float(pred_df["close"].iloc[-1])
+            pct_change = ((forecast_close - last_close) / last_close) * 100
+            
+            if pct_change > 0.5:
+                signal = "BULLISH"
+            elif pct_change < -0.5:
+                signal = "BEARISH"
+            else:
+                signal = "NEUTRAL"
+        else:
+            last_close = 0.0
+            forecast_close = 0.0
+            pct_change = 0.0
+            signal = "NEUTRAL"
+            
+        result.update({
+            "forecast": pred_df,
+            "signal": signal,
+            "pct_change": pct_change,
+            "last_close": last_close,
+            "forecast_close": forecast_close
+        })
     except Exception as e:
         result["error"] = f"Inference failed: {e}"
 
