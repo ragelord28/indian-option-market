@@ -898,67 +898,47 @@ elif selected_tab == "🔮 Kronos Forecaster":
     if st.button("⚡ Generate AI Forecast", type="primary", key="kronos_run"):
         from src.kronos_engine.forecaster import fetch_ohlcv, run_kronos_forecast, build_kronos_chart
 
-        # Phase 1: Fetch historical data
-        with st.spinner(f"📥 Fetching {kronos_timeframe} OHLCV data for {kronos_selected}..."):
-            try:
-                hist_df = fetch_ohlcv(kronos_selected, kronos_timeframe, lookback=512)
-                st.success(f"✅ Fetched {len(hist_df)} candles for {kronos_selected} ({kronos_timeframe})")
-            except Exception as e:
-                st.error(f"❌ Data fetch failed: {e}")
-                hist_df = None
+        with st.spinner("🧠 Loading Kronos-base model and running inference..."):
+            result = run_kronos_forecast(
+                symbol=kronos_selected,
+                timeframe=kronos_timeframe,
+                device=kronos_device,
+                lookback=512,
+                exchange=kronos_exchange
+            )
 
-        if hist_df is not None and len(hist_df) >= 30:
-            # Show raw data preview
-            with st.expander("📋 Raw OHLCV Data (last 10 candles)", expanded=False):
-                st.dataframe(hist_df.tail(10), hide_index=True)
+        if result and "df" in result and "forecast" in result and result["df"] is not None:
+            st.success(f"✅ Kronos forecast generated: {len(result['forecast'])} bars into the future")
+            fig = build_kronos_chart(
+                df=result["df"],
+                forecast_df=result["forecast"],
+                symbol=kronos_selected,
+                timeframe=kronos_timeframe
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-            # Phase 2: Run Kronos Inference
-            with st.spinner(f"🧠 Loading Kronos-base model and running inference on {kronos_device}..."):
-                result = run_kronos_forecast(
-                    symbol=kronos_selected,
-                    timeframe=kronos_timeframe,
-                    lookback=512,
-                    device=kronos_device,
-                    exchange=kronos_exchange
+            # Forecast summary table
+            pred_df = result["forecast"]
+            hist_df = result["df"]
+            if pred_df is not None and not pred_df.empty:
+                st.markdown("### 📊 Forecast Summary")
+                summary_df = pred_df[["open", "high", "low", "close"]].copy()
+                summary_df.index = summary_df.index.strftime("%Y-%m-%d %H:%M") if hasattr(summary_df.index, "strftime") else summary_df.index
+                summary_df = summary_df.round(2)
+                st.dataframe(summary_df, use_container_width=True)
+
+                # Direction & magnitude callout
+                last_hist_close = float(hist_df["close"].iloc[-1])
+                last_pred_close = float(pred_df["close"].iloc[-1])
+                pct_change = ((last_pred_close - last_hist_close) / last_hist_close) * 100
+                direction = "🟢 BULLISH" if pct_change > 0 else "🔴 BEARISH"
+                st.metric(
+                    label=f"Kronos {kronos_timeframe} Directional Signal",
+                    value=f"₹{last_pred_close:,.2f}",
+                    delta=f"{pct_change:+.2f}% ({direction})",
                 )
-
-            if result["error"]:
-                st.error(f"❌ {result['error']}")
-            else:
-                st.success(f"✅ Kronos forecast generated: {result['pred_len']} bars into the future")
-
-                # Phase 3: Render Plotly Chart
-                fig = build_kronos_chart(result["df"], result["forecast"], kronos_selected, kronos_timeframe)
-                st.plotly_chart(
-                    fig, 
-                    use_container_width=True, 
-                    config={
-                        "scrollZoom": True, 
-                        "displayModeBar": True
-                    }
-                )
-
-                # Forecast summary table
-                pred_df = result["forecast"]
-                if pred_df is not None and not pred_df.empty:
-                    st.markdown("### 📊 Forecast Summary")
-                    summary_df = pred_df[["open", "high", "low", "close"]].copy()
-                    summary_df.index = summary_df.index.strftime("%Y-%m-%d %H:%M") if hasattr(summary_df.index, "strftime") else summary_df.index
-                    summary_df = summary_df.round(2)
-                    st.dataframe(summary_df, use_container_width=True)
-
-                    # Direction & magnitude callout
-                    last_hist_close = float(hist_df["close"].iloc[-1])
-                    last_pred_close = float(pred_df["close"].iloc[-1])
-                    pct_change = ((last_pred_close - last_hist_close) / last_hist_close) * 100
-                    direction = "🟢 BULLISH" if pct_change > 0 else "🔴 BEARISH"
-                    st.metric(
-                        label=f"Kronos {kronos_timeframe} Directional Signal",
-                        value=f"₹{last_pred_close:,.2f}",
-                        delta=f"{pct_change:+.2f}% ({direction})",
-                    )
-        elif hist_df is not None:
-            st.warning(f"⚠️ Only {len(hist_df)} candles available. Kronos requires ≥30 bars for meaningful inference.")
+        else:
+            st.error("❌ Forecast generation failed. Please verify candle data availability.")
 
     st.markdown("---")
     st.caption("⚠️ **Disclaimer**: Kronos forecasts are probabilistic AI projections, NOT trading recommendations. Always validate with your own analysis. DRY_RUN mode is enforced.")

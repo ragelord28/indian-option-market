@@ -170,8 +170,10 @@ def fetch_ohlcv(symbol: str, timeframe: str = "30m", lookback: int = 512, exchan
         df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
         
     # Strip timezones and lowercase columns
-    if not df.empty and df.index.tz is not None:
+    if not df.empty and getattr(df.index, 'tz', None) is not None:
         df.index = df.index.tz_localize(None)
+    elif "timestamp" in df.columns and hasattr(df["timestamp"].dt, "tz") and df["timestamp"].dt.tz is not None:
+        df["timestamp"] = df["timestamp"].dt.tz_localize(None)
     df.columns = [str(c).lower() for c in df.columns]
 
     # Soft-cap at 600 candles. Newly listed stocks with <600 will safely return all they have.
