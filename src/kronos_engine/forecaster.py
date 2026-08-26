@@ -36,7 +36,7 @@ PRED_LEN_MAP = {
 }
 
 
-def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512) -> pd.DataFrame:
+def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512, exchange: str = "NSE") -> pd.DataFrame:
     """
     Fetch historical OHLCV candles for a symbol.
     Uses yfinance as the primary source (Upstox token is frequently offline).
@@ -44,7 +44,15 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512) -> pd.
     """
     import yfinance as yf
 
-    ticker_sym = symbol if symbol.endswith(".NS") or "^" in symbol else f"{symbol}.NS"
+    if exchange == "BSE":
+        ticker_sym = f"{symbol}.BO"
+    else:
+        ticker_sym = f"{symbol}.NS"
+        
+    # If the user literally typed a suffix, don't double append
+    if symbol.endswith(".NS") or symbol.endswith(".BO") or "^" in symbol:
+        ticker_sym = symbol
+
     params = TF_MAP.get(timeframe, TF_MAP["1d"])
 
     df = yf.download(ticker_sym, period=params["period"], interval=params["interval"], progress=False)
@@ -105,6 +113,7 @@ def run_kronos_forecast(
     timeframe: str = "15m",
     lookback: int = 512,
     device: str = "cpu",
+    exchange: str = "NSE"
 ) -> Dict[str, Any]:
     """
     End-to-end forecast pipeline:
@@ -114,10 +123,11 @@ def run_kronos_forecast(
     4. Return historical + forecast data for charting
 
     Returns dict with keys:
-        symbol, timeframe, historical_df, forecast_df, pred_len, error
+        symbol, timeframe, historical_df, forecast_df, pred_len, error, exchange
     """
     result = {
         "symbol": symbol,
+        "exchange": exchange,
         "timeframe": timeframe,
         "historical_df": None,
         "forecast_df": None,
@@ -127,7 +137,7 @@ def run_kronos_forecast(
 
     # 1. Fetch data
     try:
-        df = fetch_ohlcv(symbol, timeframe, lookback)
+        df = fetch_ohlcv(symbol, timeframe, lookback, exchange=exchange)
     except Exception as e:
         result["error"] = f"Data fetch failed: {e}"
         return result

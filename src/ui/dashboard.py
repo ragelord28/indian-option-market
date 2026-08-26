@@ -865,13 +865,18 @@ elif selected_tab == "🔮 Kronos Forecaster":
             search_query = st.text_input("Enter Company Name or Ticker:", value="Rolex Rings", key="kronos_scrip_search").strip()
             from src.utils.ticker_resolver import resolve_ticker
             res = resolve_ticker(search_query)
-            if res["valid"]:
-                st.success(f"✅ **Found:** {res['symbol']} — {res['company_name']} (NSE)")
+            if res.get("valid"):
+                kronos_exchange = res.get("exchange", "NSE")
+                st.success(f"✅ Found: {res['symbol']} — {res['company_name']} ({kronos_exchange})")
                 kronos_selected = res["symbol"]
             else:
-                st.error(f"❌ No listed NSE ticker found matching '{search_query}'. Try exact ticker format.")
+                kronos_exchange = "NSE"
+                st.error(f"❌ Stock Not Found: \"{search_query}\" could not be matched with high confidence to any NSE or BSE stock.")
                 kronos_selected = search_query # fallback just in case
-
+                
+        # For non-search modes, default to NSE
+        if "kronos_exchange" not in locals():
+            kronos_exchange = "NSE"
     with kronos_col2:
         kronos_timeframe = st.selectbox("Forecast Timeframe:", ["15m", "1h", "1d"], key="kronos_tf")
 
@@ -914,6 +919,7 @@ elif selected_tab == "🔮 Kronos Forecaster":
                     timeframe=kronos_timeframe,
                     lookback=512,
                     device=kronos_device,
+                    exchange=kronos_exchange
                 )
 
             if result["error"]:
