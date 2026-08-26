@@ -862,10 +862,15 @@ elif selected_tab == "🔮 Kronos Forecaster":
                 kronos_symbols = ["RELIANCE", "HDFCBANK", "ICICIBANK", "SBIN", "TCS", "INFY"]
             kronos_selected = st.selectbox("Select F&O Scrip:", kronos_symbols, key="kronos_scrip_fno")
         else:
-            kronos_selected = st.text_input("Enter NSE/BSE Ticker Symbol:", value="TATAMOTORS", key="kronos_scrip_search").strip()
-            if not kronos_selected.endswith(".NS") and not kronos_selected.endswith(".BO") and "^" not in kronos_selected:
-                # Default to NSE if no suffix provided for search mode, though yfinance handles some without it
-                pass # let forecaster.py handle adding .NS
+            search_query = st.text_input("Enter Company Name or Ticker:", value="Rolex Rings", key="kronos_scrip_search").strip()
+            from src.utils.ticker_resolver import resolve_ticker
+            res = resolve_ticker(search_query)
+            if res["valid"]:
+                st.success(f"✅ **Found:** {res['symbol']} — {res['company_name']} (NSE)")
+                kronos_selected = res["symbol"]
+            else:
+                st.error(f"❌ No listed NSE ticker found matching '{search_query}'. Try exact ticker format.")
+                kronos_selected = search_query # fallback just in case
 
     with kronos_col2:
         kronos_timeframe = st.selectbox("Forecast Timeframe:", ["15m", "1h", "1d"], key="kronos_tf")

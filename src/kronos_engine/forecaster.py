@@ -50,7 +50,7 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512) -> pd.
     df = yf.download(ticker_sym, period=params["period"], interval=params["interval"], progress=False)
 
     if df is None or df.empty:
-        raise ValueError(f"No data returned for {ticker_sym} ({timeframe})")
+        raise ValueError(f"Unable to fetch {lookback} historical candles for {ticker_sym}. Verify if the scrip has sufficient trading history.")
 
     # Flatten MultiIndex columns if present
     if isinstance(df.columns, pd.MultiIndex):
