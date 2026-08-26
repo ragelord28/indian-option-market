@@ -36,10 +36,10 @@ PRED_LEN_MAP = {
 }
 
 
-def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512, exchange: str = "NSE") -> pd.DataFrame:
+def fetch_ohlcv(symbol: str, timeframe: str = "30m", lookback: int = 512, exchange: str = "NSE") -> pd.DataFrame:
     """
     Fetch historical OHLCV candles for a symbol.
-    Uses a hybrid approach: Upstox API for 15m/1h intraday, and yfinance for 1d.
+    Uses a hybrid approach: Upstox API for 30m/1h intraday, and yfinance for 1d.
     Returns a DataFrame with columns: timestamp, open, high, low, close, volume
     """
     import datetime
@@ -47,7 +47,7 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512, exchan
     import requests
     import yfinance as yf
 
-    if timeframe in ["15m", "1h"]:
+    if timeframe in ["30m", "1h"]:
         # 1. Locate Upstox Token
         try:
             with open("data/cache/upstox_token.json", "r") as f:
@@ -76,9 +76,6 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512, exchan
             raise ValueError(f"Instrument key not found for {symbol} on {exchange}")
             
         # 3. Hybrid Fetch Logic
-        # We know from testing that Upstox limits date ranges and doesn't support 15minute natively.
-        # We will chunk requests and resample to guarantee 512 candles.
-        
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {access_token}"
@@ -87,16 +84,8 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512, exchan
         all_data = []
         end_dt = datetime.datetime.now()
         
-        if timeframe == "15m":
-            interval = "1minute"
-            chunks = 3  # 90 days total
-            resample_rule = "15min"
-            offset_val = None
-        else: # "1h"
-            interval = "30minute"
-            chunks = 5  # 150 days total
-            resample_rule = "1h"
-            offset_val = "15min"
+        interval = "30minute"
+        chunks = 5  # 150 days total
             
         for _ in range(chunks):
             to_d = end_dt.strftime('%Y-%m-%d')
@@ -122,16 +111,17 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512, exchan
         df.set_index("timestamp", inplace=True)
         df = df.sort_index()
         
-        resampler = df.resample(resample_rule, offset=offset_val) if offset_val else df.resample(resample_rule)
-        df = resampler.agg({
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-            "volume": "sum"
-        }).dropna()
+        if timeframe == "1h":
+            df = df.resample("1h", offset="15min").agg({
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum"
+            }).dropna()
         
         df = df.reset_index()
+        df.columns = [str(col).lower() for col in df.columns]
         df = df[["timestamp", "open", "high", "low", "close", "volume"]]
         
         if len(df) > lookback:
@@ -165,15 +155,14 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512, exchan
         else:
             df.columns = [c.lower() for c in df.columns]
 
+        df.columns = [str(col).lower() for col in df.columns]
+
         for col in ["open", "high", "low", "close"]:
             if col not in df.columns:
                 raise ValueError(f"Missing column '{col}' in downloaded data")
 
         if "volume" not in df.columns:
             df["volume"] = 0.0
-
-        if len(df) > lookback:
-            df = df.iloc[-lookback:]
 
         df = df.reset_index()
 
@@ -187,6 +176,9 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512, exchan
 
         df = df.rename(columns={ts_col: "timestamp"})
         df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
+        
+        if len(df) > lookback:
+            df = df.tail(lookback)
 
         return df
 
@@ -206,7 +198,7 @@ def load_kronos_predictor(device: str = "cpu"):
 
 def run_kronos_forecast(
     symbol: str,
-    timeframe: str = "15m",
+    timeframe: str = "30m",
     device: str = "cpu",
     lookback: int = 512,
     pred_len: int = None,
@@ -220,14 +212,14 @@ def run_kronos_forecast(
     4. Return historical + forecast data for charting
 
     Returns dict with keys:
-        symbol, timeframe, historical_df, forecast_df, pred_len, error, exchange
+        symbol, timeframe, df, forecast, pred_len, error, exchange
     """
     result = {
         "symbol": symbol,
         "exchange": exchange,
         "timeframe": timeframe,
-        "historical_df": None,
-        "forecast_df": None,
+        "df": None,
+        "forecast": None,
         "pred_len": 0,
         "error": None,
     }
@@ -243,7 +235,7 @@ def run_kronos_forecast(
         result["error"] = f"Insufficient data: only {len(df)} candles available (need ≥30)"
         return result
 
-    result["historical_df"] = df
+    result["df"] = df
 
     # 2. Load model
     try:
@@ -280,53 +272,48 @@ def run_kronos_forecast(
             sample_count=1,
             verbose=False,
         )
-        result["forecast_df"] = pred_df
+        result["forecast"] = pred_df
     except Exception as e:
         result["error"] = f"Inference failed: {e}"
 
     return result
 
 
-def build_kronos_chart(result: Dict[str, Any]):
+def build_kronos_chart(df: pd.DataFrame, forecast_df: pd.DataFrame, symbol: str, tf: str):
     """
     Build a Plotly figure showing historical OHLC + Kronos forecast overlay.
     Returns a plotly Figure object.
     """
     import plotly.graph_objects as go
 
-    hist_df = result["historical_df"]
-    pred_df = result["forecast_df"]
-    symbol = result["symbol"]
-    tf = result["timeframe"]
-
     fig = go.Figure()
 
     # Historical candlestick
     fig.add_trace(go.Candlestick(
-        x=hist_df["timestamp"],
-        open=hist_df["open"],
-        high=hist_df["high"],
-        low=hist_df["low"],
-        close=hist_df["close"],
+        x=df.index if df.index.name == "timestamp" else df["timestamp"],
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
         name="Historical",
         increasing_line_color="#00c087",
         decreasing_line_color="#ff3b69",
     ))
 
-    if pred_df is not None and not pred_df.empty:
+    if forecast_df is not None and not forecast_df.empty:
         # Connect forecast to last historical point
-        last_hist_ts = hist_df["timestamp"].iloc[-1]
-        last_hist_close = float(hist_df["close"].iloc[-1])
+        last_hist_ts = df.index[-1] if df.index.name == "timestamp" else df["timestamp"].iloc[-1]
+        last_hist_close = float(df["close"].iloc[-1])
 
-        forecast_ts = list(pred_df.index)
-        forecast_close = list(pred_df["close"].values)
-        forecast_high = list(pred_df["high"].values)
-        forecast_low = list(pred_df["low"].values)
+        forecast_ts = list(forecast_df.index) if forecast_df.index.name == "timestamp" else list(forecast_df["timestamp"]) if "timestamp" in forecast_df.columns else list(forecast_df.index)
+        forecast_close = list(forecast_df["close"].values)
+        forecast_high = list(forecast_df["high"].values)
+        forecast_low = list(forecast_df["low"].values)
 
         # Forecast candlestick
         fig.add_trace(go.Candlestick(
             x=forecast_ts,
-            open=list(pred_df["open"].values),
+            open=list(forecast_df['open'].values),
             high=forecast_high,
             low=forecast_low,
             close=forecast_close,
@@ -360,30 +347,32 @@ def build_kronos_chart(result: Dict[str, Any]):
         title=f"🔮 Kronos Forecast — {symbol} ({tf})",
         xaxis_title="Time",
         yaxis_title="Price (₹)",
-        template="plotly_dark",
+        template="plotly_white",
         hovermode="x unified",
         dragmode="pan",
-        xaxis_rangeslider_visible=True,
+        xaxis_rangeslider_visible=False,
         height=600,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
 
-    is_intraday = tf in ["1m", "5m", "15m", "30m", "1h", "60m"]
-    breaks = [dict(bounds=["sat", "mon"])] # Always hide weekends
-
-    if is_intraday:
-        # ONLY apply hourly breaks to intraday charts
-        breaks.append(dict(bounds=[15.5, 9.25], pattern="hour"))
+    if tf in ["30m", "1h"]:
+        rangebreaks = [
+            dict(bounds=["sat", "mon"]),
+            dict(bounds=[15.5, 9.25], pattern="hour")
+        ]
         
         # Calculate missing holidays safely over the short intraday period
         import pandas as pd
-        if hist_df is not None and not hist_df.empty:
-            all_days = pd.date_range(start=hist_df["timestamp"].min().date(), end=hist_df["timestamp"].max().date())
-            trading_days = pd.to_datetime(hist_df["timestamp"].dt.date).unique()
+        if df is not None and not df.empty:
+            ts_series = df.index if df.index.name == "timestamp" else df["timestamp"]
+            all_days = pd.date_range(start=ts_series.min().date(), end=ts_series.max().date())
+            trading_days = pd.to_datetime(ts_series.dt.date).unique()
             missing_holidays = all_days.difference(trading_days).strftime('%Y-%m-%d').tolist()
             if missing_holidays:
-                breaks.append(dict(values=missing_holidays))
+                rangebreaks.append(dict(values=missing_holidays))
+    else:
+        rangebreaks = [dict(bounds=["sat", "mon"])]
 
-    fig.update_xaxes(rangebreaks=breaks)
+    fig.update_xaxes(rangebreaks=rangebreaks)
 
     return fig

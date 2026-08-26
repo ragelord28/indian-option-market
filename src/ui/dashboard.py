@@ -878,7 +878,7 @@ elif selected_tab == "🔮 Kronos Forecaster":
         if "kronos_exchange" not in locals():
             kronos_exchange = "NSE"
     with kronos_col2:
-        kronos_timeframe = st.selectbox("Forecast Timeframe:", ["15m", "1h", "1d"], key="kronos_tf")
+        kronos_timeframe = st.selectbox("Forecast Timeframe:", ["30m", "1h", "1d"], index=0, key="kronos_tf")
 
     with kronos_col3:
         import torch
@@ -892,7 +892,7 @@ elif selected_tab == "🔮 Kronos Forecaster":
         kronos_device_raw = st.selectbox("Device:", device_opts, index=device_idx, key="kronos_device")
         kronos_device = "cpu" if "Unavailable" in kronos_device_raw else kronos_device_raw
 
-    tf_labels = {"15m": "4 hours (16 bars)", "1h": "24 hours (24 bars)", "1d": "30 days (30 bars)"}
+    tf_labels = {"30m": "8 hours (16 bars)", "1h": "24 hours (24 bars)", "1d": "30 days (30 bars)"}
     st.caption(f"📐 **Lookback**: 512 candles | **Forecast Horizon**: {tf_labels.get(kronos_timeframe, '16 bars')} | **Model**: `Kronos-base` (102.3M params)")
 
     if st.button("⚡ Generate AI Forecast", type="primary", key="kronos_run"):
@@ -928,19 +928,18 @@ elif selected_tab == "🔮 Kronos Forecaster":
                 st.success(f"✅ Kronos forecast generated: {result['pred_len']} bars into the future")
 
                 # Phase 3: Render Plotly Chart
-                fig = build_kronos_chart(result)
+                fig = build_kronos_chart(result["df"], result["forecast"], kronos_selected, kronos_timeframe)
                 st.plotly_chart(
                     fig, 
                     use_container_width=True, 
                     config={
                         "scrollZoom": True, 
-                        "displayModeBar": True, 
-                        "displaylogo": False
+                        "displayModeBar": True
                     }
                 )
 
                 # Forecast summary table
-                pred_df = result["forecast_df"]
+                pred_df = result["forecast"]
                 if pred_df is not None and not pred_df.empty:
                     st.markdown("### 📊 Forecast Summary")
                     summary_df = pred_df[["open", "high", "low", "close"]].copy()
