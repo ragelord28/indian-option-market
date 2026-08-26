@@ -332,7 +332,18 @@ def run_kronos_forecast(
             pred_df.index = pred_df.index.tz_localize(None)
 
         if not pred_df.empty and not df.empty:
+            # === Last-Value Anchoring ===
+            # Fixes massive gap-downs caused by global standard-scaling in the foundation model
+            # by vertically shifting the entire forecast trajectory to begin at the last true close.
             last_close = float(df["close"].iloc[-1])
+            first_pred_close = float(pred_df["close"].iloc[0])
+            anchor_delta = last_close - first_pred_close
+            
+            for col in ["open", "high", "low", "close"]:
+                if col in pred_df.columns:
+                    pred_df[col] = pred_df[col] + anchor_delta
+
+            # Recalculate metrics based on anchored forecast
             forecast_close = float(pred_df["close"].iloc[-1])
             pct_change = ((forecast_close - last_close) / last_close) * 100
             
