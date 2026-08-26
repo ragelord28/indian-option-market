@@ -87,40 +87,92 @@ def fetch_ohlcv(symbol: str, timeframe: str = "30m", lookback: int = 512, exchan
         interval = "30minute"
         chunks = 6 if timeframe == "1h" else 3
             
-        for _ in range(chunks):
-            to_d = end_dt.strftime('%Y-%m-%d')
-            start_dt = end_dt - datetime.timedelta(days=30)
-            from_d = start_dt.strftime('%Y-%m-%d')
+        try:
+            for _ in range(chunks):
+                to_d = end_dt.strftime('%Y-%m-%d')
+                start_dt = end_dt - datetime.timedelta(days=30)
+                from_d = start_dt.strftime('%Y-%m-%d')
+                
+                url = f"https://api.upstox.com/v2/historical-candle/{instrument_key}/{interval}/{to_d}/{from_d}"
+                res = requests.get(url, headers=headers)
+                if res.status_code == 200:
+                    data = res.json().get("data", {}).get("candles", [])
+                    all_data.extend(data)
+                else:
+                    if not all_data:
+                        raise ValueError(f"Upstox API failed: {res.status_code} - {res.text}")
+                    break
+                end_dt = start_dt
+                
+            if not all_data:
+                raise ValueError(f"Unable to fetch historical candles from Upstox for {symbol}.")
+                
+            df = pd.DataFrame(all_data, columns=["timestamp", "open", "high", "low", "close", "volume", "OI"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
+            df.set_index("timestamp", inplace=True)
+            df = df.sort_index()
             
-            url = f"https://api.upstox.com/v2/historical-candle/{instrument_key}/{interval}/{to_d}/{from_d}"
-            res = requests.get(url, headers=headers)
-            if res.status_code == 200:
-                data = res.json().get("data", {}).get("candles", [])
-                all_data.extend(data)
+            if timeframe == "1h":
+                df = df.resample("1h", offset="15min").agg({
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum"
+                }).dropna()
+            
+            df = df.reset_index()
+        except Exception as e:
+            # Fallback to yfinance if Upstox fails (e.g. invalid token, expired)
+            print(f"Upstox fetch failed: {e}. Falling back to yfinance.")
+            if exchange == "BSE":
+                ticker_sym = f"{symbol}.BO"
             else:
-                if not all_data:
-                    raise ValueError(f"Upstox API failed: {res.status_code} - {res.text}")
-                break
-            end_dt = start_dt
+                ticker_sym = f"{symbol}.NS"
+                
+            if symbol.endswith(".NS") or symbol.endswith(".BO") or "^" in symbol:
+                ticker_sym = symbol
+    
+            params = TF_MAP.get(timeframe, TF_MAP["1d"])
+    
+            end_dt = datetime.datetime.now()
+            # For intraday yfinance, restrict lookback to avoid API errors
+            lookback_days = 60 if timeframe == "30m" else 730
+            start_dt = end_dt - datetime.timedelta(days=lookback_days)
+    
+            ticker = yf.Ticker(ticker_sym)
+            df = ticker.history(start=start_dt.strftime('%Y-%m-%d'), end=end_dt.strftime('%Y-%m-%d'), interval=params["interval"])
+    
+            if df is None or df.empty:
+                raise ValueError(f"Unable to fetch historical candles for {ticker_sym} via yfinance fallback.")
+    
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [c[0].lower() for c in df.columns]
+            else:
+                df.columns = [c.lower() for c in df.columns]
+    
+            df.columns = [str(col).lower() for col in df.columns]
+    
+            for col in ["open", "high", "low", "close"]:
+                if col not in df.columns:
+                    raise ValueError(f"Missing column '{col}' in downloaded data")
+    
+            if "volume" not in df.columns:
+                df["volume"] = 0.0
+    
+            df = df.reset_index()
+    
+            ts_col = None
+            for candidate in ["Datetime", "datetime", "Date", "date", "index"]:
+                if candidate in df.columns:
+                    ts_col = candidate
+                    break
+            if ts_col is None:
+                ts_col = df.columns[0]
+    
+            df = df.rename(columns={ts_col: "timestamp"})
+            df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
             
-        if not all_data:
-            raise ValueError(f"Unable to fetch historical candles from Upstox for {symbol}.")
-            
-        df = pd.DataFrame(all_data, columns=["timestamp", "open", "high", "low", "close", "volume", "OI"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
-        df.set_index("timestamp", inplace=True)
-        df = df.sort_index()
-        
-        if timeframe == "1h":
-            df = df.resample("1h", offset="15min").agg({
-                "open": "first",
-                "high": "max",
-                "low": "min",
-                "close": "last",
-                "volume": "sum"
-            }).dropna()
-        
-        df = df.reset_index()
     else:
         # yfinance logic for 1d
         if exchange == "BSE":
