@@ -839,9 +839,9 @@ elif selected_tab == "🛡️ Risk & Audit Trail":
 # -----------------------------------------------------------------------------
 elif selected_tab == "🔮 Kronos Forecaster":
     st.markdown('<p class="main-title">🔮 Kronos Forecaster</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-title">Candlestick AI — Multi-timeframe price action forecasting for F&O equities</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Candlestick AI — Multi-timeframe price action forecasting powered by NeoQuasar/Kronos-base (102M params, AAAI 2026)</p>', unsafe_allow_html=True)
 
-    kronos_col1, kronos_col2 = st.columns([1, 1])
+    kronos_col1, kronos_col2, kronos_col3 = st.columns([2, 1, 1])
 
     with kronos_col1:
         kronos_symbols = [r["symbol"] for r in radar_items] if radar_items else ["RELIANCE", "NIFTY50", "BANKNIFTY", "INFY", "TCS"]
@@ -850,13 +850,71 @@ elif selected_tab == "🔮 Kronos Forecaster":
     with kronos_col2:
         kronos_timeframe = st.selectbox("Forecast Timeframe:", ["15m", "1h", "1d"], key="kronos_tf")
 
+    with kronos_col3:
+        kronos_device = st.selectbox("Device:", ["cpu", "cuda:0"], key="kronos_device")
+
+    tf_labels = {"15m": "4 hours (16 bars)", "1h": "24 hours (24 bars)", "1d": "30 days (30 bars)"}
+    st.caption(f"📐 **Lookback**: 512 candles | **Forecast Horizon**: {tf_labels.get(kronos_timeframe, '16 bars')} | **Model**: `Kronos-base` (102.3M params)")
+
     if st.button("⚡ Generate AI Forecast", type="primary", key="kronos_run"):
-        with st.spinner(f"Running Kronos forecast for {kronos_selected} on {kronos_timeframe}..."):
-            st.info(f"🔮 Kronos engine for **{kronos_selected}** ({kronos_timeframe}) is initialising. Candlestick pattern recognition and AI forecast modules will be wired here.")
+        from src.kronos_engine.forecaster import fetch_ohlcv, run_kronos_forecast, build_kronos_chart
+
+        # Phase 1: Fetch historical data
+        with st.spinner(f"📥 Fetching {kronos_timeframe} OHLCV data for {kronos_selected}..."):
+            try:
+                hist_df = fetch_ohlcv(kronos_selected, kronos_timeframe, lookback=512)
+                st.success(f"✅ Fetched {len(hist_df)} candles for {kronos_selected} ({kronos_timeframe})")
+            except Exception as e:
+                st.error(f"❌ Data fetch failed: {e}")
+                hist_df = None
+
+        if hist_df is not None and len(hist_df) >= 30:
+            # Show raw data preview
+            with st.expander("📋 Raw OHLCV Data (last 10 candles)", expanded=False):
+                st.dataframe(hist_df.tail(10), hide_index=True)
+
+            # Phase 2: Run Kronos Inference
+            with st.spinner(f"🧠 Loading Kronos-base model and running inference on {kronos_device}..."):
+                result = run_kronos_forecast(
+                    symbol=kronos_selected,
+                    timeframe=kronos_timeframe,
+                    lookback=512,
+                    device=kronos_device,
+                )
+
+            if result["error"]:
+                st.error(f"❌ {result['error']}")
+            else:
+                st.success(f"✅ Kronos forecast generated: {result['pred_len']} bars into the future")
+
+                # Phase 3: Render Plotly Chart
+                fig = build_kronos_chart(result)
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Forecast summary table
+                pred_df = result["forecast_df"]
+                if pred_df is not None and not pred_df.empty:
+                    st.markdown("### 📊 Forecast Summary")
+                    summary_df = pred_df[["open", "high", "low", "close"]].copy()
+                    summary_df.index = summary_df.index.strftime("%Y-%m-%d %H:%M") if hasattr(summary_df.index, "strftime") else summary_df.index
+                    summary_df = summary_df.round(2)
+                    st.dataframe(summary_df, use_container_width=True)
+
+                    # Direction & magnitude callout
+                    last_hist_close = float(hist_df["close"].iloc[-1])
+                    last_pred_close = float(pred_df["close"].iloc[-1])
+                    pct_change = ((last_pred_close - last_hist_close) / last_hist_close) * 100
+                    direction = "🟢 BULLISH" if pct_change > 0 else "🔴 BEARISH"
+                    st.metric(
+                        label=f"Kronos {kronos_timeframe} Directional Signal",
+                        value=f"₹{last_pred_close:,.2f}",
+                        delta=f"{pct_change:+.2f}% ({direction})",
+                    )
+        elif hist_df is not None:
+            st.warning(f"⚠️ Only {len(hist_df)} candles available. Kronos requires ≥30 bars for meaningful inference.")
 
     st.markdown("---")
-    st.markdown("### 📊 Forecast Output")
-    st.info("Select a scrip and timeframe above, then click **Generate AI Forecast** to produce candlestick pattern analysis, support/resistance zones, and directional probability scores.")
+    st.caption("⚠️ **Disclaimer**: Kronos forecasts are probabilistic AI projections, NOT trading recommendations. Always validate with your own analysis. DRY_RUN mode is enforced.")
 
 # -----------------------------------------------------------------------------
 # TAB 7: Scrapling Intel
