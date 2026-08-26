@@ -56,16 +56,22 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512, exchan
     params = TF_MAP.get(timeframe, TF_MAP["1d"])
 
     # Map timeframe to a safe yfinance period
+    import datetime
+    end_dt = datetime.datetime.now()
     if timeframe in ["1m", "5m", "15m", "30m"]:
-        period = "60d" # Max allowed for intraday under 1h
+        start_dt = end_dt - datetime.timedelta(days=59)
     elif timeframe == "1h":
-        period = "730d" # Max allowed for 1h
+        start_dt = end_dt - datetime.timedelta(days=400)
     else:
-        period = "5y" # Plenty for 512 daily candles
+        start_dt = end_dt - datetime.timedelta(days=2000)
 
     # Pass the explicit period to yfinance
     ticker = yf.Ticker(ticker_sym)
-    df = ticker.history(period=period, interval=params["interval"])
+    interval = params["interval"]
+    if interval == "1h":
+        interval = "60m"
+        
+    df = ticker.history(start=start_dt.strftime('%Y-%m-%d'), end=end_dt.strftime('%Y-%m-%d'), interval=interval)
 
     if df is None or df.empty:
         raise ValueError(f"Unable to fetch {lookback} historical candles for {ticker_sym}. Verify if the scrip has sufficient trading history.")
