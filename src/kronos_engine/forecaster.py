@@ -39,76 +39,156 @@ PRED_LEN_MAP = {
 def fetch_ohlcv(symbol: str, timeframe: str = "15m", lookback: int = 512, exchange: str = "NSE") -> pd.DataFrame:
     """
     Fetch historical OHLCV candles for a symbol.
-    Uses yfinance as the primary source (Upstox token is frequently offline).
-    Returns a DataFrame with columns: open, high, low, close, volume
+    Uses a hybrid approach: Upstox API for 15m/1h intraday, and yfinance for 1d.
+    Returns a DataFrame with columns: timestamp, open, high, low, close, volume
     """
+    import datetime
+    import json
+    import requests
     import yfinance as yf
 
-    if exchange == "BSE":
-        ticker_sym = f"{symbol}.BO"
-    else:
-        ticker_sym = f"{symbol}.NS"
+    if timeframe in ["15m", "1h"]:
+        # 1. Locate Upstox Token
+        try:
+            with open("data/cache/upstox_token.json", "r") as f:
+                token_data = json.load(f)
+                access_token = token_data.get("access_token")
+        except:
+            raise ValueError("Upstox token not found in data/cache/upstox_token.json")
+            
+        # 2. Locate Instrument Key
+        try:
+            with open("data/cache/equity_master.json", "r") as f:
+                equity_master = json.load(f)
+            
+            instrument_key = None
+            for key, val in equity_master.items():
+                if val.get("symbol") == symbol and val.get("exchange") == exchange:
+                    instrument_key = val.get("instrument_key")
+                    break
+            if not instrument_key:
+                if symbol in equity_master:
+                    instrument_key = equity_master[symbol].get("instrument_key")
+        except:
+            raise ValueError("Failed to load data/cache/equity_master.json")
+            
+        if not instrument_key:
+            raise ValueError(f"Instrument key not found for {symbol} on {exchange}")
+            
+        # 3. Hybrid Fetch Logic
+        # We know from testing that Upstox limits date ranges and doesn't support 15minute natively.
+        # We will chunk requests and resample to guarantee 512 candles.
         
-    # If the user literally typed a suffix, don't double append
-    if symbol.endswith(".NS") or symbol.endswith(".BO") or "^" in symbol:
-        ticker_sym = symbol
-
-    params = TF_MAP.get(timeframe, TF_MAP["1d"])
-
-    # Map timeframe to a safe yfinance period
-    import datetime
-    end_dt = datetime.datetime.now()
-    if timeframe in ["1m", "5m", "15m", "30m"]:
-        start_dt = end_dt - datetime.timedelta(days=59)
-    elif timeframe == "1h":
-        start_dt = end_dt - datetime.timedelta(days=400)
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}"
+        }
+        
+        all_data = []
+        end_dt = datetime.datetime.now()
+        
+        if timeframe == "15m":
+            interval = "1minute"
+            chunks = 3  # 90 days total
+            resample_rule = "15min"
+            offset_val = None
+        else: # "1h"
+            interval = "30minute"
+            chunks = 5  # 150 days total
+            resample_rule = "1h"
+            offset_val = "15min"
+            
+        for _ in range(chunks):
+            to_d = end_dt.strftime('%Y-%m-%d')
+            start_dt = end_dt - datetime.timedelta(days=30)
+            from_d = start_dt.strftime('%Y-%m-%d')
+            
+            url = f"https://api.upstox.com/v2/historical-candle/{instrument_key}/{interval}/{to_d}/{from_d}"
+            res = requests.get(url, headers=headers)
+            if res.status_code == 200:
+                data = res.json().get("data", {}).get("candles", [])
+                all_data.extend(data)
+            else:
+                if not all_data:
+                    raise ValueError(f"Upstox API failed: {res.status_code} - {res.text}")
+                break
+            end_dt = start_dt
+            
+        if not all_data:
+            raise ValueError(f"Unable to fetch historical candles from Upstox for {symbol}.")
+            
+        df = pd.DataFrame(all_data, columns=["timestamp", "open", "high", "low", "close", "volume", "OI"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
+        df.set_index("timestamp", inplace=True)
+        df = df.sort_index()
+        
+        resampler = df.resample(resample_rule, offset=offset_val) if offset_val else df.resample(resample_rule)
+        df = resampler.agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }).dropna()
+        
+        df = df.reset_index()
+        df = df[["timestamp", "open", "high", "low", "close", "volume"]]
+        
+        if len(df) > lookback:
+            df = df.tail(lookback)
+            
+        return df
+        
     else:
+        # yfinance logic for 1d
+        if exchange == "BSE":
+            ticker_sym = f"{symbol}.BO"
+        else:
+            ticker_sym = f"{symbol}.NS"
+            
+        if symbol.endswith(".NS") or symbol.endswith(".BO") or "^" in symbol:
+            ticker_sym = symbol
+
+        params = TF_MAP.get(timeframe, TF_MAP["1d"])
+
+        end_dt = datetime.datetime.now()
         start_dt = end_dt - datetime.timedelta(days=2000)
 
-    # Pass the explicit period to yfinance
-    ticker = yf.Ticker(ticker_sym)
-    interval = params["interval"]
-    if interval == "1h":
-        interval = "60m"
-        
-    df = ticker.history(start=start_dt.strftime('%Y-%m-%d'), end=end_dt.strftime('%Y-%m-%d'), interval=interval)
+        ticker = yf.Ticker(ticker_sym)
+        df = ticker.history(start=start_dt.strftime('%Y-%m-%d'), end=end_dt.strftime('%Y-%m-%d'), interval=params["interval"])
 
-    if df is None or df.empty:
-        raise ValueError(f"Unable to fetch {lookback} historical candles for {ticker_sym}. Verify if the scrip has sufficient trading history.")
+        if df is None or df.empty:
+            raise ValueError(f"Unable to fetch {lookback} historical candles for {ticker_sym}. Verify if the scrip has sufficient trading history.")
 
-    # Flatten MultiIndex columns if present
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [c[0].lower() for c in df.columns]
-    else:
-        df.columns = [c.lower() for c in df.columns]
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0].lower() for c in df.columns]
+        else:
+            df.columns = [c.lower() for c in df.columns]
 
-    # Ensure required columns
-    for col in ["open", "high", "low", "close"]:
-        if col not in df.columns:
-            raise ValueError(f"Missing column '{col}' in downloaded data")
+        for col in ["open", "high", "low", "close"]:
+            if col not in df.columns:
+                raise ValueError(f"Missing column '{col}' in downloaded data")
 
-    if "volume" not in df.columns:
-        df["volume"] = 0.0
+        if "volume" not in df.columns:
+            df["volume"] = 0.0
 
-    # Take last `lookback` candles
-    if len(df) > lookback:
-        df = df.iloc[-lookback:]
+        if len(df) > lookback:
+            df = df.iloc[-lookback:]
 
-    df = df.reset_index()
+        df = df.reset_index()
 
-    # Normalise the timestamp column name
-    ts_col = None
-    for candidate in ["Datetime", "datetime", "Date", "date", "index"]:
-        if candidate in df.columns:
-            ts_col = candidate
-            break
-    if ts_col is None:
-        ts_col = df.columns[0]
+        ts_col = None
+        for candidate in ["Datetime", "datetime", "Date", "date", "index"]:
+            if candidate in df.columns:
+                ts_col = candidate
+                break
+        if ts_col is None:
+            ts_col = df.columns[0]
 
-    df = df.rename(columns={ts_col: "timestamp"})
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = df.rename(columns={ts_col: "timestamp"})
+        df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
 
-    return df
+        return df
 
 
 def load_kronos_predictor(device: str = "cpu"):
