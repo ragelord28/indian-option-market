@@ -303,14 +303,63 @@ def run_kronos_forecast(
     x_df = df[["open", "high", "low", "close", "volume"]].copy()
     x_timestamp = df["timestamp"].copy()
 
-    # Generate future timestamps
+    # Generate market-session-aware future timestamps.
+    # Naive linear generation (last_ts + delta * i) breaks intraday charts because it
+    # produces bars at 15:45, 16:15 etc — outside market hours — which are then hidden
+    # by Plotly rangebreaks, making the forecast completely invisible.
     if len(df) >= 2:
         freq_delta = df["timestamp"].iloc[-1] - df["timestamp"].iloc[-2]
     else:
-        freq_delta = timedelta(minutes=15)
+        freq_delta = timedelta(minutes=30)
 
     last_ts = df["timestamp"].iloc[-1]
-    future_timestamps = pd.Series([last_ts + freq_delta * (i + 1) for i in range(pred_len)])
+
+    def _next_market_timestamps(last: pd.Timestamp, delta: timedelta, n: int, tf: str) -> pd.Series:
+        """Generate n future timestamps that fall within NSE market session (09:15–15:30)."""
+        import pandas as pd
+        from datetime import time as dtime
+        MARKET_OPEN  = dtime(9, 15)
+        MARKET_CLOSE = dtime(15, 30)
+
+        if tf == "1d":
+            # For daily, just advance by calendar days (skipping weekends)
+            result = []
+            cur = last
+            while len(result) < n:
+                cur = cur + delta
+                if cur.weekday() < 5:  # Mon–Fri
+                    result.append(cur)
+            return pd.Series(result)
+
+        # Intraday: advance bar-by-bar, skipping non-session times
+        result = []
+        cur = last
+        while len(result) < n:
+            cur = cur + delta
+            # Skip weekends
+            if cur.weekday() >= 5:
+                # Jump to next Monday 09:15
+                days_ahead = 7 - cur.weekday()  # Saturday→2, Sunday→1
+                cur = (cur + pd.Timedelta(days=days_ahead)).replace(
+                    hour=MARKET_OPEN.hour, minute=MARKET_OPEN.minute, second=0, microsecond=0
+                )
+            # If we've gone past market close, jump to next trading day open
+            elif cur.time() > MARKET_CLOSE:
+                next_day = cur + pd.Timedelta(days=1)
+                while next_day.weekday() >= 5:
+                    next_day += pd.Timedelta(days=1)
+                cur = next_day.replace(
+                    hour=MARKET_OPEN.hour, minute=MARKET_OPEN.minute, second=0, microsecond=0
+                )
+            # If before market open, snap to market open same day
+            elif cur.time() < MARKET_OPEN:
+                cur = cur.replace(
+                    hour=MARKET_OPEN.hour, minute=MARKET_OPEN.minute, second=0, microsecond=0
+                )
+            result.append(cur)
+        return pd.Series(result)
+
+    future_timestamps = _next_market_timestamps(last_ts, freq_delta, pred_len, timeframe)
 
     # 4. Run inference
     try:
@@ -319,8 +368,8 @@ def run_kronos_forecast(
             x_timestamp=x_timestamp,
             y_timestamp=future_timestamps,
             pred_len=pred_len,
-            T=1.0,
-            top_p=0.9,
+            T=0.7,
+            top_p=0.85,
             sample_count=1,
             verbose=False,
         )
@@ -483,7 +532,7 @@ def build_kronos_chart(df: pd.DataFrame, forecast_df: pd.DataFrame, symbol: str,
     # === Auto-zoom to recent context + forecast ===
     # Show last N historical candles + forecast so the forecast is clearly visible.
     # User can still pan/zoom out to see all 600 candles of history.
-    ZOOM_LOOKBACK = {"30m": 48, "1h": 60, "1d": 90}
+    ZOOM_LOOKBACK = {"30m": 90, "1h": 120, "1d": 140}
     zoom_n = ZOOM_LOOKBACK.get(tf, 60)
 
     if df is not None and not df.empty:
