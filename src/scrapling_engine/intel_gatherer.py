@@ -25,14 +25,19 @@ async def get_t_plus_3_return(symbol: str, event_date_str: str) -> tuple[float, 
         return 0.0, ""
     
     start_date = event_date - datetime.timedelta(days=730)
-    end_date = datetime.date.today()
+    end_date = datetime.date.today() + datetime.timedelta(days=1)
     
-    df = await asyncio.to_thread(yf.download, f"{symbol}.NS", start=start_date, end=end_date, progress=False)
+    # Use yf.Ticker.history instead of yf.download to prevent MultiIndex issues
+    ticker = yf.Ticker(f"{symbol}.NS")
+    df = await asyncio.to_thread(ticker.history, start=start_date, end=end_date)
     
     if df.empty:
         return 0.0, ""
     
-    idx_mask = df.index >= pd.to_datetime(event_date)
+    # Flatten columns to lowercase
+    df.columns = [str(c).lower() for c in df.columns]
+    
+    idx_mask = df.index >= pd.to_datetime(event_date).tz_localize(df.index.tz)
     if not idx_mask.any():
         return 0.0, ""
     
@@ -42,8 +47,9 @@ async def get_t_plus_3_return(symbol: str, event_date_str: str) -> tuple[float, 
     if loc_t + 3 >= len(df):
         return 0.0, t_idx.strftime("%Y-%m-%d")
     
-    t_close = float(df['Close'].iloc[loc_t])
-    t3_close = float(df['Close'].iloc[loc_t + 3])
+    # Safely access scalar values
+    t_close = float(df['close'].iloc[loc_t])
+    t3_close = float(df['close'].iloc[loc_t + 3])
     
     if t_close == 0:
         return 0.0, t_idx.strftime("%Y-%m-%d")
@@ -76,20 +82,7 @@ def extract_content(url: str, title: str, snippet: str) -> dict:
 async def _call_llm(system_prompt: str, user_prompt: str) -> str:
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        if "category" in system_prompt.lower() or "catalyst_summary" in system_prompt.lower():
-            return json.dumps({
-                "catalyst_summary": "Mock summary: Strong earnings reported.",
-                "catalyst_category": "Earnings Beat",
-                "sentiment_score": 0.8
-            })
-        elif "date" in system_prompt.lower():
-            return "2023-10-15"
-        else:
-            return json.dumps({
-                "catalyst_summary": "Mock summary.",
-                "sentiment_score": 0.8,
-                "historical_precedence": "Mock history."
-            })
+        raise ValueError("OPENROUTER_API_KEY is not set in .env")
     
     client = AsyncOpenAI(
         base_url="https://openrouter.ai/api/v1",
@@ -123,21 +116,50 @@ async def gather_stock_intel(symbol: str, company_name: str = "") -> dict:
 
     ddgs = DDGS()
     query_name = company_name if company_name else symbol
-    query = f"{symbol} {query_name} stock news"
     
-    # 1. Scrape News (last 24-48h, top 10-15)
-    results = []
-    try:
-        results = await asyncio.to_thread(lambda: list(ddgs.text(query, timelimit='d', max_results=15)))
-    except Exception:
-        pass
+    # 1. Multi-Vector Search Sweep
+    v1 = f'"{symbol}" "{query_name}" SEBI order filing bulk deal board meeting'
+    v2 = f'"{symbol}" "{query_name}" contract win order penalty dispute'
+    v3 = f'"{symbol}" stock target rating quarterly results'
     
-    if not results:
-        # fallback to 'w' if 'd' returns nothing
+    def fetch_vector(q):
+        from duckduckgo_search import DDGS
+        res = []
         try:
-            results = await asyncio.to_thread(lambda: list(ddgs.text(query, timelimit='w', max_results=15)))
-        except Exception:
-            pass
+            with DDGS() as ddgs:
+                try:
+                    res = list(ddgs.news(q, timelimit='d', max_results=15))
+                except Exception as e:
+                    print(f"news err: {e}")
+                if not res:
+                    try:
+                        res = list(ddgs.text(q, timelimit='d', max_results=15))
+                    except Exception as e:
+                        print(f"text err: {e}")
+        except Exception as e:
+            print(f"ddgs err: {e}")
+        return res
+
+    results_v1, results_v2, results_v3 = await asyncio.gather(
+        asyncio.to_thread(fetch_vector, v1),
+        asyncio.to_thread(fetch_vector, v2),
+        asyncio.to_thread(fetch_vector, v3)
+    )
+    
+    raw_results = results_v1 + results_v2 + results_v3
+    
+    # Deduplicate by URL
+    seen_urls = set()
+    results = []
+    for r in raw_results:
+        url = r.get("url") or r.get("href")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            # normalize keys for news vs text
+            r['href'] = url
+            if 'body' not in r and 'snippet' in r:
+                r['body'] = r['snippet']
+            results.append(r)
             
     # Concurrently scrape top 6
     tasks = []
@@ -193,7 +215,8 @@ async def gather_stock_intel(symbol: str, company_name: str = "") -> dict:
     historical_precedence = "No identical historical catalyst found in past 2 years."
     
     if "noise" not in catalyst_cat.lower():
-        hist_query = f"{symbol} {query_name} {catalyst_cat} 2023 2024"
+        curr_year = datetime.datetime.now().year
+        hist_query = f"{symbol} {query_name} {catalyst_cat} {curr_year - 2} {curr_year - 1}"
         hist_results = []
         try:
             hist_results = await asyncio.to_thread(lambda: list(ddgs.text(hist_query, max_results=5)))
