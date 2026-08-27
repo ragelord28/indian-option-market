@@ -37,6 +37,8 @@ from src.scanner.eod_scanner import run_eod_scanner
 from src.scanner.universe import get_lot_size
 from src.scrapling_engine.intel_gatherer import gather_stock_intel
 import asyncio
+import nest_asyncio
+nest_asyncio.apply()
 
 
 def is_market_session_active() -> bool:
@@ -983,30 +985,39 @@ elif selected_tab == "🔮 Kronos Forecaster":
 # -----------------------------------------------------------------------------
 elif selected_tab == "🕵️ Scrapling Intel":
     st.markdown('<p class="main-title">🕵️ Scrapling Intel</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-title">Deep Web Scraper & News Synthesis — Real-time intelligence gathering for F&O equities</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Deep Web Scraper & News Synthesis — Real-time intelligence gathering for Equities</p>', unsafe_allow_html=True)
 
-    # 1. Smart Search Bar
+    # 1. Universal Search Combo
     try:
         with open("data/cache/equity_master.json", "r") as f:
             equity_data = json.load(f)
             equity_keys = sorted(list(equity_data.keys()))
     except Exception:
-        equity_keys = ["RELIANCE", "SUZLON", "ZOMATO"]
+        equity_keys = []
 
-    scrapling_query = st.selectbox("Search Scrip:", options=[""] + equity_keys, index=0, key="scrapling_query")
+    st.write("Enter any NSE/BSE ticker, company name, or select from F&O list below:")
+    col_search1, col_search2 = st.columns([3, 1])
+    with col_search1:
+        free_text = st.text_input("Enter Ticker or Company Name (e.g. RELIANCE, ZOMATO):", key="scrapling_freetext")
+    with col_search2:
+        selected_scrip = st.selectbox("Or select F&O Scrip:", options=[""] + equity_keys, index=0, key="scrapling_select")
+
+    scrapling_query = free_text.strip().upper() if free_text.strip() else selected_scrip
+    
+    # clean symbol
+    symbol_clean = scrapling_query.split(".")[0].strip()
 
     if st.button("🔍 Run Intel Gather", type="primary", key="scrapling_run"):
-        if scrapling_query.strip():
+        if symbol_clean:
             # 2. Terminal UI
-            with st.status("Deploying Scrapling Spiders...", expanded=True) as status:
-                st.write(f"🕷️ Scraping live news for {scrapling_query} (last 48h)...")
-                st.write(f"🧠 Classifying Catalyst via OpenRouter...")
-                st.write(f"🕰️ Hunting for Historical Precedence...")
-                st.write(f"🧮 Calculating T+3 Impact...")
+            with st.status("Deploying Scrapling Spiders across 15+ sources...", expanded=True) as status:
+                st.write(f"🕷️ Scraping live news for {symbol_clean} (last 24-48h)...")
+                st.write(f"🧠 Classifying Catalyst via OpenRouter (gemini-2.5-flash)...")
+                st.write(f"🕰️ Hunting for Historical Precedence & T+3 Impact...")
                 
-                # run async function in sync wrapper
+                # safe async execution
                 try:
-                    intel_result = asyncio.run(gather_stock_intel(scrapling_query))
+                    intel_result = asyncio.run(gather_stock_intel(symbol_clean))
                     status.update(label="Intel Gathering Complete!", state="complete", expanded=False)
                 except Exception as e:
                     intel_result = None
@@ -1019,8 +1030,6 @@ elif selected_tab == "🕵️ Scrapling Intel":
                 
                 # Sentiment Score Metric
                 sentiment = float(intel_result.get("sentiment_score", 0.0))
-                sentiment_color = "normal" if sentiment == 0 else ("inverse" if sentiment < 0 else "normal") # actually let's use delta
-                # For metric cards, we can just display it
                 st.metric(label="Sentiment Score (-1.0 to +1.0)", value=f"{sentiment:.2f}", delta=f"{sentiment:.2f}")
                 
                 # Catalyst Summary
@@ -1032,6 +1041,14 @@ elif selected_tab == "🕵️ Scrapling Intel":
                 st.success(f"**🕰️ Historical T+3 Precedence:**
 
 {intel_result.get('historical_precedence', 'N/A')}")
+                
+                # Raw Articles Expander
+                with st.expander(f"📑 Raw Article Snippets & Sources ({len(intel_result.get('articles', []))})"):
+                    for i, art in enumerate(intel_result.get("articles", [])):
+                        st.markdown(f"**{i+1}. {art.get('title', 'No Title')}**")
+                        st.markdown(f"*URL:* [{art.get('url', 'N/A')}]({art.get('url', '#')})")
+                        st.caption(art.get("snippet", ""))
+                        st.markdown("---")
 
         else:
-            st.warning("Please select a scrip to search.")
+            st.warning("Please enter a ticker or select a scrip.")
