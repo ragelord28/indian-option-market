@@ -193,6 +193,21 @@ def run_morning_radar(
         except Exception:
             pass
 
+    # -------------------------------------------------------------------------
+    # Clock-Based Phase Gate: Determine market phase automatically using IST.
+    # Before 09:30: Pre-ORB phase — only fetch live spot LTP, lock all ORB logic.
+    # 09:30 to 15:30: Full ORB evaluation (breakouts, vetoes, triggers).
+    # -------------------------------------------------------------------------
+    try:
+        import pytz
+        _ist = pytz.timezone("Asia/Kolkata")
+        _now_ist = datetime.now(_ist)
+    except Exception:
+        _now_ist = datetime.now()
+
+    _now_time_min = _now_ist.hour * 60 + _now_ist.minute
+    _is_pre_orb = _now_time_min < 9 * 60 + 30   # Before 09:30 AM IST
+
     sector_counts: Dict[str, int] = {}
     radar_items: List[Dict[str, Any]] = []
 
@@ -204,7 +219,7 @@ def run_morning_radar(
         has_event = bool(item.get("has_event_risk", False))
         conv_score = float(item.get("conviction_score", 80.0))
 
-        # Market session active check
+        # Market session active check (overridden by explicit simulation fixtures)
         session_active = (
             is_market_session_active()
             or force_session_evaluation
@@ -213,6 +228,78 @@ def run_morning_radar(
             or ("simulated_triggered" in item)
         )
 
+        # ── PRE-ORB PHASE (before 09:30 AM IST) ──────────────────────────────
+        # Only fetch live LTP; do NOT evaluate any guards or triggers.
+        # Return all candidates in AWAITING_ORB with a "Forming 09:15–09:30 Range" reason.
+        if _is_pre_orb and "simulated_open" not in item and "simulated_triggered" not in item:
+            try:
+                live_spot = float(item.get("close", 0.0))
+                # Attempt a quick LTP fetch from Upstox if available
+                upstox_token_file = Path("data/upstox_token.json")
+                if os.getenv("UPSTOX_ACCESS_TOKEN") or (upstox_token_file.exists() and upstox_token_file.stat().st_size > 0):
+                    try:
+                        from src.data.upstox_provider import UpstoxProvider
+                        provider = UpstoxProvider()
+                        ltp_data = provider.get_ltp(sym)
+                        if ltp_data and ltp_data.get("ltp"):
+                            live_spot = float(ltp_data["ltp"])
+                    except Exception:
+                        pass
+            except Exception:
+                live_spot = float(item.get("close", 0.0))
+
+            item_bias = item.get("bias", "")
+            if not item_bias:
+                reg = item.get("regime", "").upper()
+                sugg = item.get("suggested_action", "").upper()
+                if "BULL" in reg or "BUY CALL" in sugg or "CALL" in sugg:
+                    bias = "BULLISH"
+                elif "BEAR" in reg or "BUY PUT" in sugg or "PUT" in sugg:
+                    bias = "BEARISH"
+                else:
+                    bias = "RANGEBOUND"
+            else:
+                bias = str(item_bias).upper()
+
+            ivr_val = float(item.get("ivr", 45.0))
+            vrp_val = float(item.get("vrp", 5.0))
+            entry_val = float(item.get("entry", live_spot))
+            ticket = build_optimal_strategy(
+                symbol=sym,
+                spot_price=live_spot,
+                bias=bias,
+                ivr=ivr_val,
+                vrp=vrp_val,
+                option_chain_df=pd.DataFrame(),
+                lot_size=50,
+                underlying_target=item.get("target"),
+            )
+
+            radar_items.append({
+                "#": idx,
+                "symbol": sym,
+                "sector": sec,
+                "regime": item.get("regime", "Bullish Momentum"),
+                "bias": bias,
+                "suggested_action": item.get("suggested_action", "BUY CALL"),
+                "status": "AWAITING_ORB",
+                "triggered_at": None,
+                "veto_reason": None,
+                "orb_reason": "Forming 09:15–09:30 Range",
+                "close": live_spot,
+                "live_spot": live_spot,
+                "entry": entry_val,
+                "stop_loss": item.get("stop_loss", round(live_spot * 0.98, 2)),
+                "target": item.get("target", round(live_spot * 1.04, 2)),
+                "trigger_zone": f"₹{entry_val:,.2f}",
+                "conviction_score": conv_score,
+                "vrp": vrp_val,
+                "ivr": ivr_val,
+                "execution_ticket": ticket,
+            })
+            continue
+
+        # ── FULL ORB EVALUATION PHASE (09:30 AM – 15:30 PM IST) ──────────────
         # Attempt to fetch live 15m candle data if session is active and not a mock fixture
         live_info = fetch_live_15m_data(sym) if (session_active and "simulated_open" not in item) else None
 

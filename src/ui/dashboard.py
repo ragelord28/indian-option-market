@@ -315,15 +315,49 @@ if selected_tab == "📊 D-1 Command Center":
     st.markdown('<p class="main-title">📊 D-1 Actionable Command Center</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-title">Pre-market setups evaluated against Sector Limit, Event Blackout, 1.5x ATR Gap Veto, and 09:30 ORB Triggers</p>', unsafe_allow_html=True)
 
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        if st.button("⚡ Run Live Morning Radar (09:30 ORB Scan)", type="primary"):
-            with st.spinner("Fetching live 15m candle data from Upstox / Market..."):
-                from src.radar.morning_radar import scan_morning_radar
-                scan_morning_radar()
-                st.success("Radar scan complete! Watchlist updated.")
-                st.rerun()
-    with col2:
+    # ── Determine current market phase automatically ──────────────────────────
+    try:
+        import pytz
+        _ist_tz = pytz.timezone("Asia/Kolkata")
+        _now_tab = datetime.now(_ist_tz)
+    except Exception:
+        _now_tab = datetime.now()
+    _tab_min = _now_tab.hour * 60 + _now_tab.minute
+    _is_pre_orb_tab   = _tab_min < 9 * 60 + 30
+    _is_orb_active    = 9 * 60 + 30 <= _tab_min <= 15 * 60 + 30
+    _is_post_session  = _tab_min > 15 * 60 + 30
+
+    # ── Always auto-run the radar on every page load / 5-min refresh ─────────
+    with st.spinner("🔄 Auto-refreshing radar data..."):
+        try:
+            from src.radar.morning_radar import scan_morning_radar
+            auto_radar_result = scan_morning_radar()
+            radar_items = auto_radar_result.get("radar_items", radar_items)
+        except Exception as _re:
+            st.caption(f"⚠️ Live radar fetch failed (offline feed?): {_re}")
+
+    # ── Phase indicator banner ────────────────────────────────────────────────
+    if _is_pre_orb_tab:
+        st.info(
+            f"🟡 **PRE-ORB PHASE** — `{_now_tab.strftime('%H:%M IST')}` | "
+            "Live Spot LTPs are updating. ORB range is forming (09:15–09:30 AM). "
+            "All candidates are in **🟡 AWAITING ORB** state. Full ORB evaluation begins at **09:30 AM IST**."
+        )
+    elif _is_orb_active:
+        st.success(
+            f"🟢 **LIVE SESSION ACTIVE** — `{_now_tab.strftime('%H:%M IST')}` | "
+            "Agent 1.5 ORB engine is evaluating breakouts, vetoes, and triggers in real-time. "
+            "Data auto-refreshes every 5 minutes."
+        )
+    else:
+        st.warning(
+            f"🌙 **POST-SESSION** — `{_now_tab.strftime('%H:%M IST')}` | "
+            "Market closed. Showing last intraday radar snapshot. "
+            "Run D-1 nightly scanner after 16:00 to regenerate tomorrow's watchlist."
+        )
+
+    # ── Manual D-1 nightly scan button (post-session only) ───────────────────
+    with st.expander("⚙️ Manual Controls", expanded=False):
         if st.button("🌙 Run D-1 Nightly Scanner (Post 4:00 PM)", type="secondary"):
             with st.spinner("Scanning 158 F&O stocks with today's closing prices..."):
                 run_eod_scanner()
@@ -331,13 +365,10 @@ if selected_tab == "📊 D-1 Command Center":
                 st.rerun()
 
     scan_ts = radar_data.get("timestamp", datetime.now().isoformat())
-    st.caption(f"⏱️ **Last Radar Scan**: `{scan_ts}` | **Market Session**: {'🟢 LIVE SESSION' if is_market_session_active() else '🌙 CLOSED / PRE-MARKET'}")
-
-    if not is_market_session_active():
-        st.info("🌙 Outside Live Market Hours: All candidates are in 🟡 AWAITING ORB pre-market state pending 09:15 AM opening bell and 09:30 AM ORB breakout evaluation.")
+    st.caption(f"⏱️ **Last Radar Scan**: `{scan_ts}` | **Auto-refresh**: every 5 minutes")
 
     if not radar_items:
-        st.warning("No radar data available. Run D-1 Scanner & Morning Radar first.")
+        st.warning("No radar data available. Run the D-1 Nightly Scanner first (expand Manual Controls above).")
     else:
         table_rows = []
         for r in radar_items:
