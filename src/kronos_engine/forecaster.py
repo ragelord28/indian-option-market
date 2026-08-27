@@ -31,8 +31,9 @@ TF_MAP = {
 # Prediction horizon per timeframe
 PRED_LEN_MAP = {
     "15m": 16,   # 4 hours ahead
+    "30m": 16,   # 8 hours ahead (16 x 30-min bars)
     "1h":  24,   # 24 hours ahead
-    "1d":  30,   # 30 days ahead
+    "1d":  30,   # 30 trading days ahead
 }
 
 
@@ -381,21 +382,57 @@ def run_kronos_forecast(
             pred_df.index = pred_df.index.tz_localize(None)
 
         if not pred_df.empty and not df.empty:
-            # === Last-Value Anchoring ===
-            # Fixes massive gap-downs caused by global standard-scaling in the foundation model
-            # by vertically shifting the entire forecast trajectory to begin at the last true close.
             last_close = float(df["close"].iloc[-1])
-            first_pred_close = float(pred_df["close"].iloc[0])
-            anchor_delta = last_close - first_pred_close
-            
-            for col in ["open", "high", "low", "close"]:
-                if col in pred_df.columns:
-                    pred_df[col] = pred_df[col] + anchor_delta
+            raw_closes = pred_df["close"].values.copy().astype(float)
 
-            # Recalculate metrics based on anchored forecast
+            # === Returns-Based Anchoring with Volatility Clipping ===
+            # Preserves the SHAPE/DIRECTION of Kronos predictions while preventing
+            # the amplitude distortion caused by global Z-score normalization over
+            # non-stationary long-term data (especially severe for 1d over 850 days).
+            #
+            # Steps:
+            #   1. Extract predicted bar-to-bar returns from raw model output.
+            #   2. Clip each return to ±3x recent realized volatility.
+            #      This keeps directional predictions intact but prevents unrealistic
+            #      moves like a 30-day forecast crashing 35%.
+            #   3. Reconstruct the price path starting from last true close.
+            #   4. Scale open/high/low proportionally to maintain OHLC relationships.
+
+            recent_vol = float(df["close"].pct_change().dropna().tail(20).std())
+            # Safety floor: never let vol drop below 0.1% (prevents div/0 on flatline data)
+            recent_vol = max(recent_vol, 0.001)
+
+            # Per-bar return clipping: 3× recent vol per bar is generous enough to
+            # allow genuine forecasts while preventing model artifacts.
+            max_ret_per_bar = 3.0 * recent_vol
+
+            # Extract bar-by-bar returns from raw output
+            raw_rets = np.diff(raw_closes, prepend=raw_closes[0]) / np.maximum(np.abs(raw_closes), 0.01)
+
+            # Clip returns
+            clipped_rets = np.clip(raw_rets, -max_ret_per_bar, max_ret_per_bar)
+
+            # Reconstruct anchored close path
+            anchored_closes = np.empty(len(raw_closes))
+            anchored_closes[0] = last_close
+            for i in range(1, len(raw_closes)):
+                anchored_closes[i] = anchored_closes[i - 1] * (1.0 + clipped_rets[i])
+
+            # Scale open / high / low proportionally to the close ratio
+            scale = np.where(
+                np.abs(raw_closes) > 0.01,
+                anchored_closes / raw_closes,
+                1.0
+            )
+            for col in ["open", "high", "low"]:
+                if col in pred_df.columns:
+                    pred_df[col] = (pred_df[col].values.astype(float) * scale).round(2)
+            pred_df["close"] = anchored_closes.round(2)
+
+            # Recalculate metrics
             forecast_close = float(pred_df["close"].iloc[-1])
             pct_change = ((forecast_close - last_close) / last_close) * 100
-            
+
             if pct_change > 0.5:
                 signal = "BULLISH"
             elif pct_change < -0.5:
