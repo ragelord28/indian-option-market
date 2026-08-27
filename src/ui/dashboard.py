@@ -35,6 +35,8 @@ from src.radar.morning_radar import run_morning_radar
 from src.radar.trade_watcher import monitor_active_trades, _atomic_json_write
 from src.scanner.eod_scanner import run_eod_scanner
 from src.scanner.universe import get_lot_size
+from src.scrapling_engine.intel_gatherer import gather_stock_intel
+import asyncio
 
 
 def is_market_session_active() -> bool:
@@ -983,15 +985,53 @@ elif selected_tab == "🕵️ Scrapling Intel":
     st.markdown('<p class="main-title">🕵️ Scrapling Intel</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-title">Deep Web Scraper & News Synthesis — Real-time intelligence gathering for F&O equities</p>', unsafe_allow_html=True)
 
-    scrapling_query = st.text_input("Search Scrip or Topic:", placeholder="e.g. RELIANCE earnings, NIFTY expiry, RBI policy", key="scrapling_query")
+    # 1. Smart Search Bar
+    try:
+        with open("data/cache/equity_master.json", "r") as f:
+            equity_data = json.load(f)
+            equity_keys = sorted(list(equity_data.keys()))
+    except Exception:
+        equity_keys = ["RELIANCE", "SUZLON", "ZOMATO"]
+
+    scrapling_query = st.selectbox("Search Scrip:", options=[""] + equity_keys, index=0, key="scrapling_query")
 
     if st.button("🔍 Run Intel Gather", type="primary", key="scrapling_run"):
         if scrapling_query.strip():
-            with st.spinner(f"Gathering intelligence for '{scrapling_query}'..."):
-                st.info(f"🕵️ Scrapling engine is initialising for query: **{scrapling_query}**. Web scraping, news aggregation, and sentiment synthesis modules will be wired here.")
-        else:
-            st.warning("Please enter a scrip name or topic to search.")
+            # 2. Terminal UI
+            with st.status("Deploying Scrapling Spiders...", expanded=True) as status:
+                st.write(f"🕷️ Scraping live news for {scrapling_query} (last 48h)...")
+                st.write(f"🧠 Classifying Catalyst via OpenRouter...")
+                st.write(f"🕰️ Hunting for Historical Precedence...")
+                st.write(f"🧮 Calculating T+3 Impact...")
+                
+                # run async function in sync wrapper
+                try:
+                    intel_result = asyncio.run(gather_stock_intel(scrapling_query))
+                    status.update(label="Intel Gathering Complete!", state="complete", expanded=False)
+                except Exception as e:
+                    intel_result = None
+                    status.update(label=f"Failed: {str(e)}", state="error", expanded=False)
+            
+            # 3. Render Output
+            if intel_result:
+                st.markdown("---")
+                st.markdown("### 📰 Intelligence Synthesis")
+                
+                # Sentiment Score Metric
+                sentiment = float(intel_result.get("sentiment_score", 0.0))
+                sentiment_color = "normal" if sentiment == 0 else ("inverse" if sentiment < 0 else "normal") # actually let's use delta
+                # For metric cards, we can just display it
+                st.metric(label="Sentiment Score (-1.0 to +1.0)", value=f"{sentiment:.2f}", delta=f"{sentiment:.2f}")
+                
+                # Catalyst Summary
+                st.info(f"**📰 Current News Summary (last 48h):**
 
-    st.markdown("---")
-    st.markdown("### 📰 Intelligence Feed")
-    st.info("Enter a scrip or topic above and click **Run Intel Gather** to pull latest news, social sentiment, institutional activity, and corporate action data.")
+{intel_result.get('catalyst_summary', 'N/A')}")
+                
+                # Historical Precedence
+                st.success(f"**🕰️ Historical T+3 Precedence:**
+
+{intel_result.get('historical_precedence', 'N/A')}")
+
+        else:
+            st.warning("Please select a scrip to search.")
