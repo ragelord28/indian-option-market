@@ -1033,17 +1033,13 @@ elif selected_tab == "🕵️ Scrapling Intel":
                 st.metric(label="Sentiment Score (-1.0 to +1.0)", value=f"{sentiment:.2f}", delta=f"{sentiment:.2f}")
                 
                 # Catalyst Summary
-                st.info(f"**📰 Current News Summary (last 48h):**
-
-{intel_result.get('catalyst_summary', 'N/A')}")
+                st.info(f"**📰 Current News Summary (last 48h):**\n\n{intel_result.get('catalyst_summary', 'N/A')}")
                 
                 # Historical Precedence
-                st.success(f"**🕰️ Historical T+3 Precedence:**
-
-{intel_result.get('historical_precedence', 'N/A')}")
+                st.success(f"**🕰️ Historical T+3 Precedence:**\n\n{intel_result.get('historical_precedence', 'N/A')}")
                 
                 # Raw Articles Expander
-                with st.expander(f"📑 Raw Article Snippets & Sources ({len(intel_result.get('articles', []))})"):
+                with st.expander(f"📑 Raw Sources & Deep-Web Intelligence ({len(intel_result.get('articles', []))} Sources Captured)"):
                     for i, art in enumerate(intel_result.get("articles", [])):
                         st.markdown(f"**{i+1}. {art.get('title', 'No Title')}**")
                         st.markdown(f"*URL:* [{art.get('url', 'N/A')}]({art.get('url', '#')})")
