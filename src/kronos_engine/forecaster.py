@@ -480,4 +480,22 @@ def build_kronos_chart(df: pd.DataFrame, forecast_df: pd.DataFrame, symbol: str,
 
     fig.update_xaxes(rangebreaks=rangebreaks)
 
+    # === Auto-zoom to recent context + forecast ===
+    # Show last N historical candles + forecast so the forecast is clearly visible.
+    # User can still pan/zoom out to see all 600 candles of history.
+    ZOOM_LOOKBACK = {"30m": 48, "1h": 60, "1d": 90}
+    zoom_n = ZOOM_LOOKBACK.get(tf, 60)
+
+    if df is not None and not df.empty:
+        ts_series = df.index if df.index.name == "timestamp" else df["timestamp"]
+        zoom_start = ts_series.iloc[-min(zoom_n, len(ts_series))]
+        # Extend x-axis end to include the full forecast window
+        if forecast_df is not None and not forecast_df.empty:
+            forecast_ts_all = list(forecast_df.index) if "timestamp" not in forecast_df.columns else list(forecast_df["timestamp"])
+            zoom_end = forecast_ts_all[-1] if forecast_ts_all else ts_series.iloc[-1]
+        else:
+            zoom_end = ts_series.iloc[-1]
+        fig.update_xaxes(range=[zoom_start, zoom_end])
+
     return fig
+
